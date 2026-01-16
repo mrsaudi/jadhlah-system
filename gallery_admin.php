@@ -1,0 +1,2028 @@
+<?php
+// gallery_admin_complete.php - نظام إدارة معرض كامل نهائي - محدث
+
+error_reporting(E_ALL);
+ini_set('display_errors', 1);
+
+session_start();
+if (!isset($_SESSION['admin_logged_in']) || $_SESSION['admin_logged_in'] !== true) {
+    header('Location: admin_login.php');
+    exit();
+}
+
+$host = 'localhost';
+$db = 'u709146392_jadhlah_db';
+$user = 'u709146392_jad_admin';
+$pass = '1245@vmP';
+
+try {
+    $pdo = new PDO("mysql:host=$host;dbname=$db;charset=utf8mb4", $user, $pass, [
+        PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
+        PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
+        PDO::ATTR_EMULATE_PREPARES => false
+    ]);
+} catch (PDOException $e) {
+    die("خطأ في قاعدة البيانات: " . $e->getMessage());
+}
+
+// دالة للحصول على مسار الصورة
+function getValidImagePath($groomId, $filename) {
+    if (empty($groomId) || empty($filename)) return false;
+    
+    $baseDir = $_SERVER['DOCUMENT_ROOT'];
+    
+    $paths = [
+        "/grooms/{$groomId}/modal_thumb/{$filename}",
+        "/grooms/{$groomId}/thumb/{$filename}",
+        "/grooms/{$groomId}/thumbnails/{$filename}",
+        "/grooms/{$groomId}/originals/{$filename}",
+        "/grooms/{$groomId}/watermarked/{$filename}",
+        "/grooms/{$groomId}/images/{$filename}",
+        "/grooms/{$groomId}/{$filename}"
+    ];
+    
+    foreach ($paths as $path) {
+        $fullPath = $baseDir . $path;
+        if (@file_exists($fullPath) && @is_file($fullPath) && @is_readable($fullPath)) {
+            $imageInfo = @getimagesize($fullPath);
+            if ($imageInfo !== false) {
+                return $path;
+            }
+        }
+    }
+    
+    return false;
+}
+
+// دالة للحصول على البنر
+function getGroomBanner($groomId) {
+    $baseDir = $_SERVER['DOCUMENT_ROOT'];
+    $bannerPath = "/grooms/{$groomId}/banner.jpg";
+    
+    if (@file_exists($baseDir . $bannerPath)) {
+        return $bannerPath;
+    }
+    return false;
+}
+
+// إضافة عمود display_order_gallery لجدول groom_photos إذا لم يكن موجوداً
+try {
+    $pdo->exec("ALTER TABLE groom_photos ADD COLUMN display_order_gallery INT DEFAULT 0");
+} catch (PDOException $e) {
+    // العمود موجود بالفعل أو خطأ آخر - نتجاهله
+}
+
+// إنشاء الجداول
+try {
+    $pdo->exec("
+        CREATE TABLE IF NOT EXISTS gallery_uploaded_images (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            filename VARCHAR(255) NOT NULL,
+            title VARCHAR(255),
+            is_featured BOOLEAN DEFAULT 1,
+            display_order INT DEFAULT 0,
+            likes INT DEFAULT 0,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    ");
+    
+    $pdo->exec("
+        CREATE TABLE IF NOT EXISTS video_categories (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            name VARCHAR(100) NOT NULL,
+            name_ar VARCHAR(100) NOT NULL,
+            slug VARCHAR(100) NOT NULL UNIQUE,
+            color VARCHAR(7) DEFAULT '#FFD700',
+            icon VARCHAR(50),
+            display_order INT DEFAULT 0,
+            is_active BOOLEAN DEFAULT 1,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    ");
+    
+    $pdo->exec("
+        CREATE TABLE IF NOT EXISTS groom_videos (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            groom_id INT NOT NULL,
+            youtube_url VARCHAR(500) NOT NULL,
+            video_number INT,
+            category_id INT,
+            title VARCHAR(255),
+            display_order INT DEFAULT 0,
+            is_active BOOLEAN DEFAULT 1,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (groom_id) REFERENCES grooms(id) ON DELETE CASCADE,
+            FOREIGN KEY (category_id) REFERENCES video_categories(id) ON DELETE SET NULL
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    ");
+    
+    $pdo->exec("
+        CREATE TABLE IF NOT EXISTS external_videos (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            youtube_url VARCHAR(500) NOT NULL,
+            title VARCHAR(255),
+            category_id INT,
+            display_order INT DEFAULT 0,
+            is_active BOOLEAN DEFAULT 1,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (category_id) REFERENCES video_categories(id) ON DELETE SET NULL
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    ");
+    
+    $pdo->exec("
+        CREATE TABLE IF NOT EXISTS photographers (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            name VARCHAR(255) NOT NULL,
+            role VARCHAR(255) NOT NULL,
+            description TEXT,
+            image VARCHAR(255),
+            display_order INT DEFAULT 0,
+            is_active BOOLEAN DEFAULT 1,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    ");
+    
+    $pdo->exec("
+        CREATE TABLE IF NOT EXISTS gallery_settings (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            setting_key VARCHAR(100) UNIQUE NOT NULL,
+            setting_value TEXT,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    ");
+    
+    $pdo->exec("INSERT IGNORE INTO video_categories (name, name_ar, slug, icon, display_order) 
+                VALUES ('Classic', 'كلاسيك', 'classic', '🎬', 0)");
+    
+    // إضافة الإعدادات الافتراضية - مع خيارات التحكم الجديدة
+   $pdo->exec("INSERT IGNORE INTO gallery_settings (setting_key, setting_value) VALUES 
+    ('photos_limit', '30'),
+    ('instagram_token', ''),
+    ('instagram_enabled', '0'),
+    ('auto_feature_photos', '0'),
+    ('auto_show_grooms', '0'),
+    ('auto_show_videos', '0'),
+    ('show_groom_featured_in_gallery', '0')
+");
+    
+    $uploadDir = $_SERVER['DOCUMENT_ROOT'] . '/gallery_uploads';
+    if (!is_dir($uploadDir)) {
+        mkdir($uploadDir, 0755, true);
+    }
+    
+    $photographersDir = $_SERVER['DOCUMENT_ROOT'] . '/photographers';
+    if (!is_dir($photographersDir)) {
+        mkdir($photographersDir, 0755, true);
+    }
+    
+} catch (PDOException $e) {
+    $createError = $e->getMessage();
+}
+
+$message = '';
+$messageType = 'success';
+
+// معالجة الطلبات POST
+if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    
+    // فحص وتطبيق التمييز التلقائي
+$autoFeatureStmt = $pdo->query("SELECT setting_value FROM gallery_settings WHERE setting_key = 'auto_feature_photos'");
+$autoFeature = $autoFeatureStmt->fetch();
+$autoFeatureEnabled = ($autoFeature['setting_value'] ?? '0') == '1';
+
+if ($autoFeatureEnabled) {
+    // إذا كان التمييز التلقائي مفعّل، ميّز جميع الصور المميزة في صفحات العرسان للمعرض تلقائياً
+    $pdo->exec("
+        UPDATE groom_photos 
+        SET featured_for_gallery = 1 
+        WHERE is_featured = 1 
+        AND featured_for_gallery = 0 
+        AND hidden = 0
+    ");
+}
+
+    try {
+        // حفظ الإعدادات - مع الخيارات الجديدة
+        if (isset($_POST['save_settings'])) {
+            $photosLimit = max(1, min(100, (int)$_POST['photos_limit']));
+            $instagramToken = trim($_POST['instagram_token']);
+            $instagramEnabled = isset($_POST['instagram_enabled']) ? 1 : 0;
+            $autoFeaturePhotos = isset($_POST['auto_feature_photos']) ? 1 : 0;
+            $autoShowGrooms = isset($_POST['auto_show_grooms']) ? 1 : 0;
+            $autoShowVideos = isset($_POST['auto_show_videos']) ? 1 : 0;
+            
+            $showGroomFeaturedInGallery = isset($_POST['show_groom_featured_in_gallery']) ? 1 : 0;
+            
+            $pdo->prepare("UPDATE gallery_settings SET setting_value = ? WHERE setting_key = 'photos_limit'")->execute([$photosLimit]);
+            $pdo->prepare("UPDATE gallery_settings SET setting_value = ? WHERE setting_key = 'instagram_token'")->execute([$instagramToken]);
+            $pdo->prepare("UPDATE gallery_settings SET setting_value = ? WHERE setting_key = 'instagram_enabled'")->execute([$instagramEnabled]);
+            $pdo->prepare("UPDATE gallery_settings SET setting_value = ? WHERE setting_key = 'auto_feature_photos'")->execute([$autoFeaturePhotos]);
+            $pdo->prepare("UPDATE gallery_settings SET setting_value = ? WHERE setting_key = 'auto_show_grooms'")->execute([$autoShowGrooms]);
+            $pdo->prepare("UPDATE gallery_settings SET setting_value = ? WHERE setting_key = 'auto_show_videos'")->execute([$autoShowVideos]);
+            $pdo->prepare("UPDATE gallery_settings SET setting_value = ? WHERE setting_key = 'show_groom_featured_in_gallery'")->execute([$showGroomFeaturedInGallery]);
+            
+            $message = "✅ تم حفظ الإعدادات بنجاح";
+        }
+        
+        // إلغاء تمييز جميع الصور
+if (isset($_POST['unmark_all_photos'])) {
+    $pdo->exec("UPDATE groom_photos SET featured_for_gallery = 0");
+    $message = "✅ تم إزالة جميع الصور من المعرض";
+}
+        
+        // تحديث ترتيب العرسان
+        if (isset($_POST['update_grooms_order'])) {
+            $orders = json_decode($_POST['orders'], true);
+            foreach ($orders as $id => $order) {
+                $pdo->prepare("UPDATE grooms SET display_order = ? WHERE id = ?")->execute([$order, $id]);
+            }
+            $message = "✅ تم حفظ الترتيب";
+        }
+        
+        // تحديث ترتيب الصور المرفوعة
+        if (isset($_POST['update_images_order'])) {
+            $orders = json_decode($_POST['orders'], true);
+            foreach ($orders as $id => $order) {
+                $pdo->prepare("UPDATE gallery_uploaded_images SET display_order = ? WHERE id = ?")->execute([$order, $id]);
+            }
+            $message = "✅ تم حفظ الترتيب";
+        }
+        
+        // تحديث ترتيب الفيديوهات الخارجية
+        if (isset($_POST['update_videos_order'])) {
+            $orders = json_decode($_POST['orders'], true);
+            foreach ($orders as $id => $order) {
+                $pdo->prepare("UPDATE external_videos SET display_order = ? WHERE id = ?")->execute([$order, $id]);
+            }
+            $message = "✅ تم حفظ الترتيب";
+        }
+        
+        // تحديث ترتيب التصنيفات
+        if (isset($_POST['update_categories_order'])) {
+            $orders = json_decode($_POST['orders'], true);
+            foreach ($orders as $id => $order) {
+                $pdo->prepare("UPDATE video_categories SET display_order = ? WHERE id = ?")->execute([$order, $id]);
+            }
+            $message = "✅ تم حفظ الترتيب";
+        }
+        
+        
+        // تحديث ترتيب جميع الفيديوهات
+if (isset($_POST['update_all_videos_order'])) {
+    $orders = json_decode($_POST['orders'], true);
+    $counter = 0;
+    
+    foreach ($orders as $id => $order) {
+        $counter++;
+        
+        if (strpos($id, 'ext_') === 0) {
+            // فيديو خارجي
+            $realId = str_replace('ext_', '', $id);
+            $pdo->prepare("UPDATE external_videos SET display_order = ? WHERE id = ?")->execute([$counter, $realId]);
+            
+        } elseif (strpos($id, 'grv_') === 0) {
+            // فيديو من جدول groom_videos
+            $realId = str_replace('grv_', '', $id);
+            $pdo->prepare("UPDATE groom_videos SET display_order = ? WHERE id = ?")->execute([$counter, $realId]);
+            
+        } elseif (strpos($id, 'gro_') === 0) {
+            // فيديو قديم من جدول grooms
+            $parts = explode('_', str_replace('gro_', '', $id));
+            if (count($parts) === 2) {
+                $groomId = (int)$parts[0];
+                $videoNumber = (int)$parts[1];
+                
+                // تحقق إذا كان موجود في groom_videos
+                $stmt = $pdo->prepare("SELECT id FROM groom_videos WHERE groom_id = ? AND video_number = ?");
+                $stmt->execute([$groomId, $videoNumber]);
+                $existing = $stmt->fetch();
+                
+                if ($existing) {
+                    // تحديث الترتيب
+                    $pdo->prepare("UPDATE groom_videos SET display_order = ? WHERE id = ?")->execute([$counter, $existing['id']]);
+                } else {
+                    // إنشاء سجل جديد
+                    $youtubeField = "youtube{$videoNumber}";
+                    $stmt = $pdo->prepare("SELECT {$youtubeField} FROM grooms WHERE id = ?");
+                    $stmt->execute([$groomId]);
+                    $groomData = $stmt->fetch();
+                    
+                    if ($groomData && !empty($groomData[$youtubeField])) {
+                        $stmt = $pdo->prepare("INSERT INTO groom_videos (groom_id, youtube_url, video_number, display_order) VALUES (?, ?, ?, ?)");
+                        $stmt->execute([$groomId, $groomData[$youtubeField], $videoNumber, $counter]);
+                    }
+                }
+            }
+        }
+    }
+    
+    $message = "✅ تم حفظ ترتيب جميع الفيديوهات";
+}
+
+        // تحديث ترتيب المصورين
+        if (isset($_POST['update_photographers_order'])) {
+            $orders = json_decode($_POST['orders'], true);
+            foreach ($orders as $id => $order) {
+                $pdo->prepare("UPDATE photographers SET display_order = ? WHERE id = ?")->execute([$order, $id]);
+            }
+            $message = "✅ تم حفظ الترتيب";
+        }
+        
+        // إضافة مصور
+        if (isset($_POST['add_photographer']) && isset($_FILES['photographer_image'])) {
+            $name = trim($_POST['photographer_name']);
+            $role = trim($_POST['photographer_role']);
+            $description = trim($_POST['photographer_description']);
+            $file = $_FILES['photographer_image'];
+            
+            if ($file['error'] === UPLOAD_ERR_OK && !empty($name) && !empty($role)) {
+                $allowedTypes = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'];
+                $fileType = mime_content_type($file['tmp_name']);
+                
+                if (in_array($fileType, $allowedTypes)) {
+                    $ext = pathinfo($file['name'], PATHINFO_EXTENSION);
+                    $filename = 'photographer_' . time() . '_' . uniqid() . '.' . $ext;
+                    $uploadPath = $_SERVER['DOCUMENT_ROOT'] . '/photographers/' . $filename;
+                    
+                    if (move_uploaded_file($file['tmp_name'], $uploadPath)) {
+                        $stmt = $pdo->prepare("INSERT INTO photographers (name, role, description, image) VALUES (?, ?, ?, ?)");
+                        $stmt->execute([$name, $role, $description, $filename]);
+                        $message = "✅ تم إضافة المصور بنجاح";
+                    }
+                }
+            }
+        }
+        
+        // حذف مصور
+        if (isset($_POST['delete_photographer'])) {
+            $photographerId = (int)$_POST['photographer_id'];
+            $stmt = $pdo->prepare("SELECT image FROM photographers WHERE id = ?");
+            $stmt->execute([$photographerId]);
+            $photographer = $stmt->fetch();
+            
+            if ($photographer) {
+                $filePath = $_SERVER['DOCUMENT_ROOT'] . '/photographers/' . $photographer['image'];
+                if (file_exists($filePath)) {
+                    unlink($filePath);
+                }
+                $pdo->prepare("DELETE FROM photographers WHERE id = ?")->execute([$photographerId]);
+                $message = "✅ تم حذف المصور";
+            }
+        }
+        
+        if (isset($_POST['update_likes'])) {
+            $pdo->exec("UPDATE grooms g SET total_likes = (SELECT COALESCE(SUM(gp.likes), 0) FROM groom_photos gp WHERE gp.groom_id = g.id)");
+            $message = "✅ تم تحديث عدادات الإعجاب";
+        }
+        
+        if (isset($_POST['upload_image']) && isset($_FILES['gallery_image'])) {
+            $file = $_FILES['gallery_image'];
+            $title = trim($_POST['image_title'] ?? '');
+            
+            if ($file['error'] === UPLOAD_ERR_OK) {
+                $allowedTypes = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'];
+                $fileType = mime_content_type($file['tmp_name']);
+                
+                if (in_array($fileType, $allowedTypes)) {
+                    $ext = pathinfo($file['name'], PATHINFO_EXTENSION);
+                    $filename = 'gallery_' . time() . '_' . uniqid() . '.' . $ext;
+                    $uploadPath = $_SERVER['DOCUMENT_ROOT'] . '/gallery_uploads/' . $filename;
+                    
+                    if (move_uploaded_file($file['tmp_name'], $uploadPath)) {
+                        $stmt = $pdo->prepare("INSERT INTO gallery_uploaded_images (filename, title) VALUES (?, ?)");
+                        $stmt->execute([$filename, $title]);
+                        $message = "✅ تم رفع الصورة بنجاح";
+                    }
+                }
+            }
+        }
+        
+        if (isset($_POST['delete_uploaded_image'])) {
+            $imageId = (int)$_POST['image_id'];
+            $stmt = $pdo->prepare("SELECT filename FROM gallery_uploaded_images WHERE id = ?");
+            $stmt->execute([$imageId]);
+            $image = $stmt->fetch();
+            
+            if ($image) {
+                $filePath = $_SERVER['DOCUMENT_ROOT'] . '/gallery_uploads/' . $image['filename'];
+                if (file_exists($filePath)) unlink($filePath);
+                $pdo->prepare("DELETE FROM gallery_uploaded_images WHERE id = ?")->execute([$imageId]);
+                $message = "✅ تم حذف الصورة";
+            }
+        }
+        
+        // إزالة صورة من المعرض
+if (isset($_POST['remove_from_gallery'])) {
+    $photoId = (int)$_POST['photo_id'];
+    $pdo->prepare("UPDATE groom_photos SET featured_for_gallery = 0 WHERE id = ?")->execute([$photoId]);
+    $message = "✅ تم إزالة الصورة من المعرض";
+}
+// تحديث رقم الترتيب للصورة
+if (isset($_POST['update_photo_order'])) {
+    $photoId = (int)$_POST['photo_id'];
+    $newOrder = (int)$_POST['new_order'];
+    $pdo->prepare("UPDATE groom_photos SET display_order_gallery = ? WHERE id = ?")->execute([$newOrder, $photoId]);
+    $message = "✅ تم تحديث ترتيب الصورة";
+}
+       if (isset($_POST['toggle_groom_photo_featured'])) {
+    $photoId = (int)$_POST['photo_id'];
+    
+    // جلب الحالة الحالية
+    $stmt = $pdo->prepare("SELECT featured_for_gallery FROM groom_photos WHERE id = ?");
+    $stmt->execute([$photoId]);
+    $current = $stmt->fetch();
+    
+    if ($current['featured_for_gallery'] == 1) {
+        // إذا كانت مميزة للعرض، نلغي التمييز
+        $pdo->prepare("UPDATE groom_photos SET featured_for_gallery = 0 WHERE id = ?")->execute([$photoId]);
+        $message = "✅ تم إلغاء التمييز من المعرض";
+    } else {
+        // إذا لم تكن مميزة للعرض، نميّزها
+        $pdo->prepare("UPDATE groom_photos SET featured_for_gallery = 1 WHERE id = ?")->execute([$photoId]);
+        $message = "✅ تم تمييز الصورة للمعرض";
+    }
+}
+
+        
+        if (isset($_POST['add_category'])) {
+            $name = trim($_POST['category_name']);
+            $nameAr = trim($_POST['category_name_ar']);
+            $slug = strtolower(preg_replace('/[^a-z0-9]+/i', '_', $name));
+            $icon = $_POST['category_icon'] ?? '🎬';
+            $color = $_POST['category_color'] ?? '#FFD700';
+            
+            if (!empty($name) && !empty($nameAr)) {
+                $stmt = $pdo->prepare("INSERT INTO video_categories (name, name_ar, slug, icon, color) VALUES (?, ?, ?, ?, ?)");
+                $stmt->execute([$name, $nameAr, $slug, $icon, $color]);
+                $message = "✅ تم إضافة التصنيف";
+            }
+        }
+        
+        if (isset($_POST['delete_category'])) {
+            $categoryId = (int)$_POST['category_id'];
+            $pdo->prepare("DELETE FROM video_categories WHERE id = ?")->execute([$categoryId]);
+            $message = "✅ تم حذف التصنيف";
+        }
+        
+        if (isset($_POST['add_external_video'])) {
+            $url = trim($_POST['video_url']);
+            $title = trim($_POST['video_title']);
+            $categoryId = !empty($_POST['category_id']) ? (int)$_POST['category_id'] : null;
+            
+            // ✅ جلب إعداد الإظهار التلقائي
+            $autoShowStmt = $pdo->query("SELECT setting_value FROM gallery_settings WHERE setting_key = 'auto_show_videos'");
+            $autoShow = $autoShowStmt->fetch();
+            $isActive = ($autoShow && $autoShow['setting_value'] == '1') ? 1 : 0;
+            
+            if (!empty($url)) {
+                $stmt = $pdo->prepare("INSERT INTO external_videos (youtube_url, title, category_id, is_active) VALUES (?, ?, ?, ?)");
+                $stmt->execute([$url, $title, $categoryId, $isActive]);
+                
+                $message = $isActive 
+                    ? "✅ تم إضافة الفيديو وهو ظاهر في المعرض" 
+                    : "✅ تم إضافة الفيديو (مخفي - فعّله من قسم الفيديوهات)";
+            }
+        }
+        
+       // ✅ تفعيل/تعطيل الفيديوهات
+        if (isset($_POST['toggle_video_active'])) {
+            $videoId = (int)$_POST['video_id'];
+            $videoType = $_POST['video_type'] ?? 'external';
+            
+            $table = $videoType === 'external' ? 'external_videos' : 'groom_videos';
+            $pdo->prepare("UPDATE $table SET is_active = NOT is_active WHERE id = ?")->execute([$videoId]);
+            
+            $message = "✅ تم تحديث حالة الفيديو";
+        }
+        
+        
+        if (isset($_POST['update_groom_video_category'])) {
+            $groomId = (int)$_POST['groom_id'];
+            $videoNumber = (int)$_POST['video_number'];
+            $categoryId = !empty($_POST['category_id']) ? (int)$_POST['category_id'] : null;
+            $youtubeUrl = $_POST['youtube_url'];
+            
+            $stmt = $pdo->prepare("SELECT id FROM groom_videos WHERE groom_id = ? AND video_number = ?");
+            $stmt->execute([$groomId, $videoNumber]);
+            $existing = $stmt->fetch();
+            
+            if ($existing) {
+                $stmt = $pdo->prepare("UPDATE groom_videos SET category_id = ?, youtube_url = ? WHERE id = ?");
+                $stmt->execute([$categoryId, $youtubeUrl, $existing['id']]);
+            } else {
+                $stmt = $pdo->prepare("INSERT INTO groom_videos (groom_id, youtube_url, video_number, category_id) VALUES (?, ?, ?, ?)");
+                $stmt->execute([$groomId, $youtubeUrl, $videoNumber, $categoryId]);
+            }
+            
+            $message = "✅ تم تحديث تصنيف الفيديو";
+        }
+        
+        if (isset($_POST['toggle_gallery'])) {
+            $groomId = (int)$_POST['groom_id'];
+            $showInGallery = isset($_POST['show_in_gallery']) ? 1 : 0;
+            $stmt = $pdo->prepare("UPDATE grooms SET show_in_gallery = ? WHERE id = ?");
+            $stmt->execute([$showInGallery, $groomId]);
+            $message = "✅ تم تحديث حالة العرض";
+        }
+        
+        if (isset($_POST['hide_groom_video'])) {
+            $groomId = (int)$_POST['groom_id'];
+            $videoNumber = (int)$_POST['video_number'];
+            
+            $pdo->prepare("DELETE FROM groom_videos WHERE groom_id = ? AND video_number = ?")->execute([$groomId, $videoNumber]);
+            
+            $youtubeField = "youtube{$videoNumber}";
+            $pdo->prepare("UPDATE grooms SET {$youtubeField} = '' WHERE id = ?")->execute([$groomId]);
+            
+            $message = "✅ تم حذف الفيديو من المعرض";
+        }
+
+        if (isset($_POST['move_photo_up'])) {
+            $photoId = (int)$_POST['photo_id'];
+            
+            $current = $pdo->prepare("SELECT id, likes FROM groom_photos WHERE id = ?");
+            $current->execute([$photoId]);
+            $currentPhoto = $current->fetch();
+            
+            if ($currentPhoto) {
+                $above = $pdo->prepare("SELECT id, likes FROM groom_photos WHERE is_featured = 1 AND hidden = 0 AND likes > ? ORDER BY likes ASC LIMIT 1");
+                $above->execute([$currentPhoto['likes']]);
+                $abovePhoto = $above->fetch();
+                
+                if ($abovePhoto) {
+                    $tempLikes = $currentPhoto['likes'] + 100000;
+                    $pdo->prepare("UPDATE groom_photos SET likes = ? WHERE id = ?")->execute([$tempLikes, $photoId]);
+                    $pdo->prepare("UPDATE groom_photos SET likes = ? WHERE id = ?")->execute([$currentPhoto['likes'], $abovePhoto['id']]);
+                    $pdo->prepare("UPDATE groom_photos SET likes = ? WHERE id = ?")->execute([$abovePhoto['likes'], $photoId]);
+                    
+                    $message = "✅ تم تحريك الصورة لأعلى";
+                }
+            }
+        }
+
+        if (isset($_POST['move_photo_down'])) {
+            $photoId = (int)$_POST['photo_id'];
+            
+            $current = $pdo->prepare("SELECT id, likes FROM groom_photos WHERE id = ?");
+            $current->execute([$photoId]);
+            $currentPhoto = $current->fetch();
+            
+            if ($currentPhoto) {
+                $below = $pdo->prepare("SELECT id, likes FROM groom_photos WHERE is_featured = 1 AND hidden = 0 AND likes < ? ORDER BY likes DESC LIMIT 1");
+                $below->execute([$currentPhoto['likes']]);
+                $belowPhoto = $below->fetch();
+                
+                if ($belowPhoto) {
+                    $tempLikes = $currentPhoto['likes'] - 100000;
+                    $pdo->prepare("UPDATE groom_photos SET likes = ? WHERE id = ?")->execute([$tempLikes, $photoId]);
+                    $pdo->prepare("UPDATE groom_photos SET likes = ? WHERE id = ?")->execute([$currentPhoto['likes'], $belowPhoto['id']]);
+                    $pdo->prepare("UPDATE groom_photos SET likes = ? WHERE id = ?")->execute([$belowPhoto['likes'], $photoId]);
+                    
+                    $message = "✅ تم تحريك الصورة لأسفل";
+                }
+            }
+        }
+
+    } catch (PDOException $e) {
+        $message = "❌ خطأ: " . $e->getMessage();
+        $messageType = 'error';
+    }
+    
+    if (!empty($message)) {
+        $_SESSION['flash_message'] = $message;
+        $_SESSION['flash_type'] = $messageType;
+        header("Location: " . $_SERVER['PHP_SELF']);
+        exit();
+    }
+}
+
+if (isset($_SESSION['flash_message'])) {
+    $message = $_SESSION['flash_message'];
+    $messageType = $_SESSION['flash_type'] ?? 'success';
+    unset($_SESSION['flash_message'], $_SESSION['flash_type']);
+}
+
+// جلب الإعدادات
+$settings = [];
+$settingsQuery = $pdo->query("SELECT setting_key, setting_value FROM gallery_settings");
+foreach ($settingsQuery as $row) {
+    $settings[$row['setting_key']] = $row['setting_value'];
+}
+
+// جلب الإحصائيات
+try {
+    $stats = $pdo->query("
+        SELECT 
+            (SELECT COUNT(*) FROM grooms WHERE is_blocked = 0 AND ready = 1) as total_grooms,
+            (SELECT COUNT(*) FROM grooms WHERE show_in_gallery = 1) as shown_grooms,
+            (SELECT COUNT(*) FROM groom_photos WHERE hidden = 0) as total_photos,
+            (SELECT COUNT(*) FROM groom_photos WHERE is_featured = 1) as featured_photos,
+            (SELECT COALESCE(SUM(total_likes), 0) FROM grooms) as total_likes,
+            (SELECT COUNT(*) FROM gallery_uploaded_images) as uploaded_images,
+            (SELECT COUNT(*) FROM photographers WHERE is_active = 1) as photographers_count
+    ")->fetch();
+} catch (PDOException $e) {
+    $stats = ['total_grooms' => 0, 'shown_grooms' => 0, 'total_photos' => 0, 'featured_photos' => 0, 'total_likes' => 0, 'uploaded_images' => 0, 'photographers_count' => 0];
+}
+
+// جلب البيانات
+$categories = $pdo->query("SELECT * FROM video_categories ORDER BY display_order, id")->fetchAll();
+
+$featuredPage = isset($_GET['featured_page']) ? max(1, (int)$_GET['featured_page']) : 1;
+$featuredPerPage = 50;
+$featuredOffset = ($featuredPage - 1) * $featuredPerPage;
+
+$totalFeaturedStmt = $pdo->query("SELECT COUNT(*) as total FROM groom_photos WHERE hidden = 0 AND is_featured = 1");
+$totalFeatured = $totalFeaturedStmt->fetch()['total'];
+$totalFeaturedPages = ceil($totalFeatured / $featuredPerPage);
+
+$featuredPhotosQuery = $pdo->prepare("
+    SELECT gp.*, g.groom_name, g.id as groom_id 
+    FROM groom_photos gp 
+    JOIN grooms g ON gp.groom_id = g.id 
+    WHERE gp.hidden = 0 AND gp.featured_for_gallery = 1
+    ORDER BY gp.display_order_gallery DESC, gp.likes DESC 
+    LIMIT ? OFFSET ?
+");
+
+$featuredPhotosQuery->execute([$featuredPerPage, $featuredOffset]);
+$featuredPhotos = $featuredPhotosQuery->fetchAll();
+
+$uploadedImages = $pdo->query("SELECT * FROM gallery_uploaded_images ORDER BY display_order DESC, id DESC")->fetchAll();
+$photographers = $pdo->query("SELECT * FROM photographers ORDER BY display_order, id")->fetchAll();
+
+$page = isset($_GET['page']) ? max(1, (int)$_GET['page']) : 1;
+$photosPerPage = 50;
+$offset = ($page - 1) * $photosPerPage;
+
+$totalPhotosStmt = $pdo->query("SELECT COUNT(*) as total FROM groom_photos WHERE hidden = 0 AND is_featured = 0");
+$totalPhotos = $totalPhotosStmt->fetch()['total'];
+$totalPages = ceil($totalPhotos / $photosPerPage);
+
+$markPage = isset($_GET['mark_page']) ? max(1, (int)$_GET['mark_page']) : 1;
+$markPerPage = 50;
+$markOffset = ($markPage - 1) * $markPerPage;
+
+$totalMarkStmt = $pdo->query("SELECT COUNT(*) as total FROM groom_photos WHERE hidden = 0 AND is_featured = 1 AND featured_for_gallery = 0");
+$totalMark = $totalMarkStmt->fetch()['total'];
+$totalMarkPages = ceil($totalMark / $markPerPage);
+
+$nonFeaturedPhotosQuery = $pdo->prepare("
+    SELECT gp.*, g.groom_name, g.id as groom_id
+    FROM groom_photos gp
+    JOIN grooms g ON gp.groom_id = g.id
+    WHERE gp.hidden = 0 
+      AND gp.is_featured = 1 
+      AND gp.featured_for_gallery = 0
+    ORDER BY gp.id DESC
+    LIMIT ? OFFSET ?
+");
+
+$nonFeaturedPhotosQuery->execute([$markPerPage, $markOffset]);
+$nonFeaturedPhotos = $nonFeaturedPhotosQuery->fetchAll();
+?>
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>لوحة تحكم المعرض - النظام الكامل المحدث</title>
+    
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        
+        :root {
+            --gold: #FFD700;
+            --gold-dark: #F59E0B;
+            --black: #000;
+            --dark: #1A1A1A;
+            --gray: #2A2A2A;
+            --success: #10B981;
+            --danger: #EF4444;
+        }
+        
+        body {
+            font-family: -apple-system, 'Tajawal', 'Segoe UI', sans-serif;
+            background: var(--black);
+            color: white;
+            line-height: 1.6;
+        }
+        
+        .container { max-width: 1600px; margin: 0 auto; padding: 20px; }
+        
+        .header {
+            background: var(--dark);
+            padding: 20px;
+            border-bottom: 2px solid var(--gold);
+            margin-bottom: 30px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.3);
+        }
+        
+        .header-content {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: 20px;
+        }
+        
+        .logo {
+            font-size: 28px;
+            font-weight: bold;
+            background: linear-gradient(135deg, var(--gold), var(--gold-dark));
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+        
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+            gap: 20px;
+            margin-bottom: 30px;
+        }
+        
+        .stat-card {
+            background: var(--dark);
+            padding: 20px;
+            border-radius: 12px;
+            text-align: center;
+            border: 1px solid rgba(255, 215, 0, 0.2);
+            transition: transform 0.3s;
+        }
+        
+        .stat-card:hover { transform: translateY(-5px); border-color: var(--gold); }
+        .stat-value { font-size: 32px; font-weight: bold; color: var(--gold); margin: 10px 0; }
+        
+        .tabs {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 30px;
+            flex-wrap: wrap;
+            border-bottom: 2px solid rgba(255, 255, 255, 0.1);
+            padding-bottom: 10px;
+        }
+        
+        .tab {
+            padding: 12px 25px;
+            background: rgba(255, 255, 255, 0.05);
+            border: none;
+            color: white;
+            cursor: pointer;
+            border-radius: 10px 10px 0 0;
+            transition: all 0.3s;
+            font-size: 15px;
+        }
+        
+        .tab:hover { background: rgba(255, 215, 0, 0.1); }
+        .tab.active { background: linear-gradient(135deg, var(--gold), var(--gold-dark)); color: var(--black); font-weight: bold; }
+        
+        .tab-content { 
+            display: none; 
+        }
+
+        .tab-content.active { 
+            display: block !important; 
+            animation: fadeIn 0.3s; 
+        }
+
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        .sortable-item,
+        .photo-card,
+        .photographer-card {
+            user-select: none;
+            -webkit-user-select: none;
+            -moz-user-select: none;
+            -ms-user-select: none;
+        }
+
+        .sortable-item *,
+        .photo-card *,
+        .photographer-card * {
+            user-select: none;
+            -webkit-user-select: none;
+            -moz-user-select: none;
+            -ms-user-select: none;
+        }
+
+        .sortable-ghost {
+            opacity: 0.4;
+            background: rgba(255, 215, 0, 0.2);
+            cursor: grabbing !important;
+        }
+
+        .sortable-drag {
+            opacity: 0.8;
+            cursor: grabbing !important;
+        }
+
+        .photo-card {
+            cursor: grab;
+        }
+
+        .photo-card:active {
+            cursor: grabbing;
+        }
+
+        .section {
+            background: var(--dark);
+            padding: 30px;
+            border-radius: 15px;
+            margin-bottom: 20px;
+        }
+        
+        .section-title {
+            font-size: 24px;
+            color: var(--gold);
+            margin-bottom: 20px;
+            padding-bottom: 10px;
+            border-bottom: 2px solid rgba(255, 215, 0, 0.2);
+        }
+        
+        .photos-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+            gap: 20px;
+        }
+        
+        .photo-card {
+            position: relative;
+            border-radius: 10px;
+            overflow: hidden;
+            background: var(--gray);
+            aspect-ratio: 1;
+            transition: transform 0.3s;
+            cursor: move;
+        }
+        
+        .photo-card:hover { transform: scale(1.05); }
+        .photo-card img { width: 100%; height: 100%; object-fit: cover; }
+        .photo-card.featured { border: 3px solid var(--gold); }
+        
+        .photo-overlay {
+            position: absolute;
+            inset: 0;
+            background: linear-gradient(to top, rgba(0,0,0,0.9), transparent);
+            display: flex;
+            flex-direction: column;
+            justify-content: flex-end;
+            padding: 10px;
+            opacity: 0;
+            transition: opacity 0.3s;
+        }
+        
+        .photo-card:hover .photo-overlay { opacity: 1; }
+        
+        .btn {
+            padding: 10px 20px;
+            border: none;
+            border-radius: 8px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s;
+            text-decoration: none;
+            display: inline-block;
+            font-size: 14px;
+        }
+        
+        .btn-primary { background: linear-gradient(135deg, var(--gold), var(--gold-dark)); color: var(--black); }
+        .btn-secondary { background: var(--gray); color: white; }
+        .btn-danger { background: var(--danger); color: white; }
+        .btn-small { padding: 6px 12px; font-size: 12px; }
+        .btn:hover { transform: translateY(-2px); box-shadow: 0 5px 15px rgba(255, 215, 0, 0.3); }
+        
+        table { width: 100%; border-collapse: separate; border-spacing: 0 10px; }
+        th { background: rgba(255, 215, 0, 0.1); padding: 15px; text-align: right; color: var(--gold); }
+        td { padding: 15px; background: rgba(255, 255, 255, 0.02); }
+        tr:hover td { background: rgba(255, 255, 255, 0.05); }
+        
+        .form-group { margin-bottom: 20px; }
+        .form-control {
+            width: 100%;
+            padding: 12px;
+            background: rgba(255, 255, 255, 0.05);
+            border: 1px solid rgba(255, 215, 0, 0.2);
+            border-radius: 8px;
+            color: white;
+            font-size: 14px;
+        }
+        
+        .form-control:focus {
+            outline: none;
+            border-color: var(--gold);
+        }
+        
+        .alert { padding: 15px 20px; border-radius: 8px; margin-bottom: 20px; font-weight: 500; }
+        .alert-success { background: rgba(16, 185, 129, 0.2); border: 1px solid var(--success); color: var(--success); }
+        .alert-error { background: rgba(239, 68, 68, 0.2); border: 1px solid var(--danger); color: var(--danger); }
+        
+        .sortable-list { list-style: none; }
+        .sortable-item {
+            background: rgba(255, 255, 255, 0.05);
+            padding: 15px;
+            margin-bottom: 10px;
+            border-radius: 8px;
+            cursor: move;
+            border: 2px solid transparent;
+            transition: all 0.3s;
+            user-select: none;
+        }
+        .sortable-item:hover { border-color: var(--gold); background: rgba(255, 215, 0, 0.1); }
+        .sortable-ghost { opacity: 0.4; background: rgba(255, 215, 0, 0.2); }
+        
+        .drag-handle {
+            display: inline-block;
+            padding: 5px 10px;
+            background: rgba(255, 215, 0, 0.2);
+            border-radius: 5px;
+            cursor: move;
+            margin-left: 10px;
+            color: var(--gold);
+            user-select: none;
+        }
+        
+        .drag-handle:hover {
+            background: rgba(255, 215, 0, 0.3);
+        }
+        
+        .upload-area {
+            border: 2px dashed rgba(255, 215, 0, 0.3);
+            border-radius: 10px;
+            padding: 30px;
+            text-align: center;
+            background: rgba(255, 255, 255, 0.02);
+            cursor: pointer;
+            transition: all 0.3s;
+        }
+        
+        .upload-area:hover { border-color: var(--gold); }
+        .upload-area input[type="file"] { display: none; }
+        
+        .info-box {
+            background: rgba(255, 215, 0, 0.1);
+            border: 1px solid rgba(255, 215, 0, 0.3);
+            border-radius: 10px;
+            padding: 15px 20px;
+            margin-bottom: 20px;
+        }
+        
+        .photographer-card {
+            background: rgba(255, 255, 255, 0.05);
+            padding: 20px;
+            border-radius: 10px;
+            text-align: center;
+            border: 1px solid rgba(255, 215, 0, 0.2);
+        }
+        
+        .photographer-card img {
+            width: 100px;
+            height: 100px;
+            border-radius: 50%;
+            object-fit: cover;
+            margin-bottom: 15px;
+            border: 3px solid var(--gold);
+        }
+        
+        .form-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 15px;
+        }
+        
+        .photo-card img {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            background: var(--gray);
+        }
+
+        .photo-card img[src=""], .photo-card img:not([src]) {
+            display: none;
+        }
+
+        .photo-card::before {
+            content: '📷';
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            font-size: 60px;
+            opacity: 0.3;
+        }
+
+        .photo-card:has(img[src]) .photo-card::before {
+            display: none;
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <div class="container">
+            <div class="header-content">
+                <div class="logo">🎨 لوحة تحكم المعرض المحدثة</div>
+                <div style="display: flex; gap: 15px; flex-wrap: wrap;">
+                    <a href="gallery.php" target="_blank" class="btn btn-primary">👁️ عرض المعرض</a>
+                    <form method="POST" style="display: inline;">
+                        <button type="submit" name="update_likes" class="btn btn-secondary">🔄 تحديث اللايكات</button>
+                    </form>
+                    <a href="logout.php" class="btn btn-secondary">🚪 خروج</a>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <div class="container">
+        <?php if (!empty($message)): ?>
+        <div class="alert alert-<?= $messageType === 'error' ? 'error' : 'success' ?>">
+            <?= htmlspecialchars($message) ?>
+        </div>
+        <?php endif; ?>
+        
+        <div class="stats-grid">
+            <div class="stat-card">
+                <div style="font-size: 30px;">👰</div>
+                <div class="stat-value"><?= $stats['shown_grooms'] ?>/<?= $stats['total_grooms'] ?></div>
+                <div>عريس معروض</div>
+            </div>
+            <div class="stat-card">
+                <div style="font-size: 30px;">⭐</div>
+                <div class="stat-value"><?= $stats['featured_photos'] ?></div>
+                <div>صورة مميزة</div>
+            </div>
+            <div class="stat-card">
+                <div style="font-size: 30px;">📤</div>
+                <div class="stat-value"><?= $stats['uploaded_images'] ?></div>
+                <div>صورة مرفوعة</div>
+            </div>
+            <div class="stat-card">
+                <div style="font-size: 30px;">👥</div>
+                <div class="stat-value"><?= $stats['photographers_count'] ?></div>
+                <div>مصور</div>
+            </div>
+            <div class="stat-card">
+                <div style="font-size: 30px;">📷</div>
+                <div class="stat-value"><?= number_format($stats['total_photos']) ?></div>
+                <div>إجمالي الصور</div>
+            </div>
+            <div class="stat-card">
+                <div style="font-size: 30px;">❤️</div>
+                <div class="stat-value"><?= number_format($stats['total_likes']) ?></div>
+                <div>إجمالي الإعجابات</div>
+            </div>
+        </div>
+        
+        <div class="tabs">
+            <button class="tab active" onclick="showTab('featured')">⭐ الصور المميزة</button>
+            <button class="tab" onclick="showTab('mark')">✨ تمييز صور</button>
+            <button class="tab" onclick="showTab('upload')">📤 رفع صور</button>
+            <button class="tab" onclick="showTab('photographers')">👥 المصورين</button>
+            <button class="tab" onclick="showTab('categories')">🏷️ التصنيفات</button>
+            <button class="tab" onclick="showTab('videos')">🎥 الفيديوهات</button>
+            <button class="tab" onclick="showTab('grooms')">👰 العرسان</button>
+            <button class="tab" onclick="showTab('settings')">⚙️ الإعدادات</button>
+        </div>
+
+        <!-- تبويب الصور المميزة -->
+        <div id="featured-tab" class="tab-content active">
+            <div class="section">
+                <h2 class="section-title">⭐ الصور المميزة - تظهر في المعرض</h2>
+                <div class="info-box" style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 15px;">
+                    <div style="flex: 1; min-width: 300px;">
+                        <strong>ℹ️ ملاحظة:</strong> هذه الصور تظهر في معرض الأعمال. 
+                        <?php if (($settings['auto_feature_photos'] ?? 0) == 1): ?>
+                            <span style="color: var(--success);">✅ التمييز التلقائي مفعّل</span> - الصور المميزة في صفحات العرسان تظهر هنا تلقائياً
+                        <?php else: ?>
+                            <span style="color: var(--gold);">⚙️ التمييز اليدوي مفعّل</span> - الصور المميزة تحتاج موافقتك من قسم "تمييز صور"
+                        <?php endif; ?>
+                    </div>
+                    <form method="POST" onsubmit="return confirm('⚠️ سيتم إلغاء تمييز <?= $stats['featured_photos'] ?> صورة. هل أنت متأكد؟')" style="margin: 0;">
+                        <button type="submit" name="unmark_all_photos" class="btn btn-danger">
+                            ❌ إلغاء تمييز جميع الصور (<?= $stats['featured_photos'] ?>)
+                        </button>
+                    </form>
+                </div>
+                
+                <h3 style="color: var(--gold); margin: 20px 0;">📤 الصور المرفوعة (<?= count($uploadedImages) ?>)</h3>
+                <?php if (!empty($uploadedImages)): ?>
+                <div class="photos-grid" id="uploaded-images-grid">
+                    <?php foreach ($uploadedImages as $image): ?>
+                    <div class="photo-card featured" data-id="<?= $image['id'] ?>">
+                        <img src="/gallery_uploads/<?= htmlspecialchars($image['filename']) ?>" alt="">
+                        <div class="photo-overlay">
+                            <div style="color: white; font-size: 12px; margin-bottom: 5px; font-weight: bold;">
+                                📤 <?= htmlspecialchars($image['title'] ?: 'صورة مرفوعة') ?>
+                            </div>
+                            <form method="POST" onsubmit="return confirm('هل أنت متأكد؟')">
+                                <input type="hidden" name="image_id" value="<?= $image['id'] ?>">
+                                <button type="submit" name="delete_uploaded_image" class="btn btn-small btn-danger" style="width: 100%;">
+                                    🗑️ حذف
+                                </button>
+                            </form>
+                        </div>
+                    </div>
+                    <?php endforeach; ?>
+                </div>
+                <button onclick="saveImagesOrder()" class="btn btn-primary" style="margin-top: 20px;">💾 حفظ ترتيب الصور المرفوعة</button>
+                <?php endif; ?>
+                
+                <h3 style="color: var(--gold); margin: 30px 0 20px;">⭐ الصور المميزة من العرسان (<?= count($featuredPhotos) ?>)</h3>
+                <div class="photos-grid">
+                    <?php 
+                    $displayedPhotos = 0;
+                    foreach ($featuredPhotos as $photo): 
+                        $imagePath = getValidImagePath($photo['groom_id'], $photo['filename']);
+                        if ($imagePath):
+                            $displayedPhotos++;
+                    ?>
+                    <div class="photo-card featured">
+                        <img src="<?= htmlspecialchars($imagePath) ?>" 
+                             alt="<?= htmlspecialchars($photo['groom_name']) ?>"
+                             onerror="this.style.display='none'; this.parentElement.style.border='2px dashed rgba(255,215,0,0.3)';">
+                        <div class="photo-overlay">
+                            <div style="color: white; font-size: 12px; margin-bottom: 5px; font-weight: bold;">
+                                <?= htmlspecialchars($photo['groom_name']) ?>
+                            </div>
+                            <div style="color: #AAA; font-size: 11px; margin-bottom: 10px;">
+                                ❤️ <?= number_format($photo['likes']) ?> | 📊 ترتيب: <?= $photo['display_order_gallery'] ?>
+                            </div>
+                            
+                            <form method="POST" style="margin: 0 0 8px 0;">
+                                <input type="hidden" name="photo_id" value="<?= $photo['id'] ?>">
+                                <div style="display: flex; gap: 5px; align-items: center;">
+                                    <input type="number" name="new_order" 
+                                           value="<?= $photo['display_order_gallery'] ?>" 
+                                           class="form-control" 
+                                           style="width: 60px; padding: 5px; font-size: 12px; text-align: center;"
+                                           placeholder="رقم">
+                                    <button type="submit" name="update_photo_order" 
+                                            class="btn btn-small btn-primary" 
+                                            style="padding: 5px 10px; font-size: 11px;">
+                                        💾
+                                    </button>
+                                </div>
+                            </form>
+                            
+                            <div style="display: grid; grid-template-columns: 1fr 1fr 2fr; gap: 5px;">
+                                <form method="POST" style="margin: 0;">
+                                    <input type="hidden" name="photo_id" value="<?= $photo['id'] ?>">
+                                    <button type="submit" name="move_photo_up" class="btn btn-small btn-secondary" 
+                                            style="width: 100%; padding: 8px 5px;" title="تحريك لأعلى">
+                                        ⬆️
+                                    </button>
+                                </form>
+                                
+                                <form method="POST" style="margin: 0;">
+                                    <input type="hidden" name="photo_id" value="<?= $photo['id'] ?>">
+                                    <button type="submit" name="move_photo_down" class="btn btn-small btn-secondary" 
+                                            style="width: 100%; padding: 8px 5px;" title="تحريك لأسفل">
+                                        ⬇️
+                                    </button>
+                                </form>
+                                
+                               <form method="POST" style="margin: 0;">
+    <input type="hidden" name="photo_id" value="<?= $photo['id'] ?>">
+    <button type="submit" name="remove_from_gallery" class="btn btn-small btn-danger" 
+            style="width: 100%; padding: 8px 5px;">
+        ❌ إزالة
+    </button>
+</form>
+                            </div>
+                        </div>
+                    </div>
+                    <?php 
+                        endif;
+                    endforeach; 
+                    
+                    if ($displayedPhotos == 0):
+                    ?>
+                    <div style="grid-column: 1/-1; text-align: center; padding: 40px; color: #666;">
+                        <div style="font-size: 60px; margin-bottom: 20px;">📷</div>
+                        <p>لا توجد صور مميزة متاحة للعرض</p>
+                    </div>
+                    <?php endif; ?>
+                </div>
+                
+                <?php if ($totalFeaturedPages > 1): ?>
+                <div style="display: flex; justify-content: center; gap: 10px; margin-top: 30px; flex-wrap: wrap;">
+                    <?php if ($featuredPage > 1): ?>
+                    <a href="?featured_page=<?= $featuredPage - 1 ?>#featured-tab" class="btn btn-secondary">← السابق</a>
+                    <?php endif; ?>
+                    
+                    <?php for ($i = max(1, $featuredPage - 2); $i <= min($totalFeaturedPages, $featuredPage + 2); $i++): ?>
+                    <a href="?featured_page=<?= $i ?>#featured-tab" 
+                       class="btn <?= $i == $featuredPage ? 'btn-primary' : 'btn-secondary' ?>"
+                       style="min-width: 45px;">
+                        <?= $i ?>
+                    </a>
+                    <?php endfor; ?>
+                    
+                    <?php if ($featuredPage < $totalFeaturedPages): ?>
+                    <a href="?featured_page=<?= $featuredPage + 1 ?>#featured-tab" class="btn btn-secondary">التالي →</a>
+                    <?php endif; ?>
+                    
+                    <span style="color: #AAA; display: flex; align-items: center; margin-right: 15px;">
+                        صفحة <?= $featuredPage ?> من <?= $totalFeaturedPages ?> (<?= $totalFeatured ?> صورة)
+                    </span>
+                </div>
+                <?php endif; ?>
+            </div>
+        </div>
+
+        <!-- تبويب تمييز الصور -->
+        <div id="mark-tab" class="tab-content">
+            <div class="section">
+                <h2 class="section-title">✨ تمييز صور من العرسان</h2>
+                
+                <div class="info-box" style="margin-bottom: 20px;">
+                    <?php if (($settings['auto_feature_photos'] ?? 0) == 1): ?>
+                        <strong>⚙️ التمييز التلقائي مفعّل:</strong> الصور المميزة في صفحات العرسان تظهر مباشرة في قسم "الصور المميزة" دون الحاجة للمرور من هنا.
+                        <a href="#settings-tab" onclick="showTab('settings')" style="color: var(--gold); text-decoration: underline;">قم بتعطيل التمييز التلقائي من الإعدادات</a> للتحكم اليدوي.
+                    <?php else: ?>
+                        <strong>✅ التحكم اليدوي مفعّل:</strong> الصور المميزة في صفحات العرسان تظهر هنا أولاً، وتحتاج موافقتك لنقلها إلى قسم "الصور المميزة" في المعرض.
+                    <?php endif; ?>
+                </div>
+                
+                <?php if ($totalPhotos == 0): ?>
+                <div style="text-align: center; padding: 40px;">
+                    <div style="font-size: 60px; margin-bottom: 20px;">✨</div>
+                    <p style="color: #AAA; margin-bottom: 20px;">جميع الصور مميزة بالفعل!</p>
+                    <form method="POST" onsubmit="return confirm('سيتم إلغاء تمييز جميع الصور. هل أنت متأكد؟')">
+                        <button type="submit" name="unmark_all_photos" class="btn btn-danger">
+                            ❌ إلغاء تمييز جميع الصور
+                        </button>
+                    </form>
+                </div>
+                <?php else: ?>
+                <div class="photos-grid">
+                    <?php foreach ($nonFeaturedPhotos as $photo): 
+                        $imagePath = getValidImagePath($photo['groom_id'], $photo['filename']);
+                        if ($imagePath):
+                    ?>
+                    <div class="photo-card">
+                        <img src="<?= htmlspecialchars($imagePath) ?>" alt="">
+                        <div class="photo-overlay">
+                            <div style="color: white; font-size: 12px; margin-bottom: 5px;">
+                                <?= htmlspecialchars($photo['groom_name']) ?>
+                            </div>
+                            <div style="color: #AAA; font-size: 11px; margin-bottom: 10px;">
+                                ❤️ <?= number_format($photo['likes']) ?>
+                            </div>
+                            <form method="POST">
+                                <input type="hidden" name="photo_id" value="<?= $photo['id'] ?>">
+                                <button type="submit" name="toggle_groom_photo_featured" class="btn btn-small btn-primary" style="width: 100%;">
+                                    ⭐ تمييز
+                                </button>
+                            </form>
+                        </div>
+                    </div>
+                    <?php endif; endforeach; ?>
+                </div>
+                <?php endif; ?>
+                
+                <?php if ($totalMarkPages > 1): ?>
+                <div style="display: flex; justify-content: center; gap: 10px; margin-top: 30px; flex-wrap: wrap;">
+                    <?php if ($markPage > 1): ?>
+                    <a href="?mark_page=<?= $markPage - 1 ?>#mark-tab" class="btn btn-secondary">← السابق</a>
+                    <?php endif; ?>
+                    
+                    <?php for ($i = max(1, $markPage - 2); $i <= min($totalMarkPages, $markPage + 2); $i++): ?>
+                    <a href="?mark_page=<?= $i ?>#mark-tab" 
+                       class="btn <?= $i == $markPage ? 'btn-primary' : 'btn-secondary' ?>"
+                       style="min-width: 45px;">
+                        <?= $i ?>
+                    </a>
+                    <?php endfor; ?>
+                    
+                    <?php if ($markPage < $totalMarkPages): ?>
+                    <a href="?mark_page=<?= $markPage + 1 ?>#mark-tab" class="btn btn-secondary">التالي →</a>
+                    <?php endif; ?>
+                    
+                    <span style="color: #AAA; display: flex; align-items: center; margin-right: 15px;">
+                        صفحة <?= $markPage ?> من <?= $totalMarkPages ?> (<?= $totalMark ?> صورة)
+                    </span>
+                </div>
+                <?php endif; ?>
+            </div>
+        </div>
+        
+        <!-- تبويب رفع الصور -->
+        <div id="upload-tab" class="tab-content">
+            <div class="section">
+                <h2 class="section-title">رفع صور خارجية</h2>
+                <form method="POST" enctype="multipart/form-data">
+                    <div class="upload-area" onclick="document.getElementById('file-input').click()">
+                        <div style="font-size: 50px; margin-bottom: 15px;">📤</div>
+                        <div style="font-size: 18px; color: var(--gold); margin-bottom: 10px;">اضغط لاختيار الصورة</div>
+                        <input type="file" id="file-input" name="gallery_image" accept="image/*" required>
+                    </div>
+                    <div class="form-group" style="margin-top: 20px;">
+                        <input type="text" name="image_title" placeholder="عنوان الصورة (اختياري)" class="form-control">
+                    </div>
+                    <button type="submit" name="upload_image" class="btn btn-primary" style="width: 100%;">✅ رفع</button>
+                </form>
+            </div>
+        </div>
+        
+        <!-- تبويب المصورين -->
+        <div id="photographers-tab" class="tab-content">
+            <div class="section">
+                <h2 class="section-title">إدارة المصورين</h2>
+                
+                <div style="background: rgba(255, 255, 255, 0.05); padding: 20px; border-radius: 10px; margin-bottom: 30px;">
+                    <h3 style="color: var(--gold); margin-bottom: 15px;">➕ إضافة مصور</h3>
+                    <form method="POST" enctype="multipart/form-data">
+                        <div class="form-grid">
+                            <div class="form-group">
+                                <input type="text" name="photographer_name" placeholder="الاسم" class="form-control" required>
+                            </div>
+                            <div class="form-group">
+                                <input type="text" name="photographer_role" placeholder="الدور (مثال: مصور رئيسي)" class="form-control" required>
+                            </div>
+                            <div class="form-group">
+                                <textarea name="photographer_description" placeholder="وصف قصير" class="form-control" rows="2"></textarea>
+                            </div>
+                            <div class="form-group">
+                                <input type="file" name="photographer_image" accept="image/*" class="form-control" required>
+                            </div>
+                        </div>
+                        <button type="submit" name="add_photographer" class="btn btn-primary">➕ إضافة</button>
+                    </form>
+                </div>
+                
+                <div class="photos-grid" id="photographers-grid">
+                    <?php foreach ($photographers as $photographer): ?>
+                    <div class="photographer-card" data-id="<?= $photographer['id'] ?>">
+                        <img src="/photographers/<?= htmlspecialchars($photographer['image']) ?>" alt="">
+                        <h3 style="color: var(--gold); margin-bottom: 10px;"><?= htmlspecialchars($photographer['name']) ?></h3>
+                        <p style="color: #AAA; font-size: 14px; margin-bottom: 10px;"><?= htmlspecialchars($photographer['role']) ?></p>
+                        <form method="POST" onsubmit="return confirm('هل أنت متأكد؟')">
+                            <input type="hidden" name="photographer_id" value="<?= $photographer['id'] ?>">
+                            <button type="submit" name="delete_photographer" class="btn btn-small btn-danger">🗑️ حذف</button>
+                        </form>
+                    </div>
+                    <?php endforeach; ?>
+                </div>
+                <button onclick="savePhotographersOrder()" class="btn btn-primary" style="margin-top: 20px;">💾 حفظ الترتيب</button>
+            </div>
+        </div>
+        
+        <!-- تبويب التصنيفات -->
+        <div id="categories-tab" class="tab-content">
+            <div class="section">
+                <h2 class="section-title">تصنيفات الفيديو</h2>
+                
+                <div style="background: rgba(255, 255, 255, 0.05); padding: 20px; border-radius: 10px; margin-bottom: 30px;">
+                    <form method="POST">
+                        <div class="form-grid">
+                            <input type="text" name="category_name" placeholder="الاسم بالإنجليزية" class="form-control" required>
+                            <input type="text" name="category_name_ar" placeholder="الاسم بالعربية" class="form-control" required>
+                            <input type="text" name="category_icon" placeholder="الأيقونة" class="form-control" value="🎬">
+                            <input type="color" name="category_color" value="#FFD700" class="form-control">
+                            <button type="submit" name="add_category" class="btn btn-primary">➕ إضافة</button>
+                        </div>
+                    </form>
+                </div>
+                
+                <div class="photos-grid" id="categories-grid">
+                    <?php foreach ($categories as $cat): ?>
+                    <div class="photographer-card" data-id="<?= $cat['id'] ?>">
+                        <div style="font-size: 50px; margin-bottom: 10px;"><?= htmlspecialchars($cat['icon']) ?></div>
+                        <h3 style="color: var(--gold);"><?= htmlspecialchars($cat['name_ar']) ?></h3>
+                        <p style="color: #AAA; font-size: 14px;"><?= htmlspecialchars($cat['name']) ?></p>
+                        <form method="POST" onsubmit="return confirm('هل أنت متأكد؟')" style="margin-top: 10px;">
+                            <input type="hidden" name="category_id" value="<?= $cat['id'] ?>">
+                            <button type="submit" name="delete_category" class="btn btn-small btn-danger">🗑️ حذف</button>
+                        </form>
+                    </div>
+                    <?php endforeach; ?>
+                </div>
+                <button onclick="saveCategoriesOrder()" class="btn btn-primary" style="margin-top: 20px;">💾 حفظ الترتيب</button>
+            </div>
+        </div>
+        
+        <!-- تبويب الفيديوهات -->
+        <!-- تبويب الفيديوهات -->
+<div id="videos-tab" class="tab-content">
+    <div class="section">
+        <h2 class="section-title">🎥 إدارة جميع الفيديوهات</h2>
+        
+        <div class="info-box" style="margin-bottom: 20px;">
+            <strong>💡 نصيحة:</strong> اسحب الفيديوهات لإعادة ترتيبها، ثم اضغط "حفظ الترتيب" في الأسفل.
+            <br>الترتيب يؤثر على عرض الفيديوهات في المعرض.
+        </div>
+        
+        <!-- نموذج إضافة فيديو خارجي -->
+        <div style="background: rgba(255, 255, 255, 0.05); padding: 20px; border-radius: 10px; margin-bottom: 30px;">
+            <h3 style="color: var(--gold); margin-bottom: 15px;">➕ إضافة فيديو خارجي</h3>
+            <form method="POST">
+                <div class="form-grid">
+                    <input type="url" name="video_url" placeholder="رابط YouTube (يدعم Shorts)" class="form-control" required>
+                    <input type="text" name="video_title" placeholder="العنوان" class="form-control">
+                    <select name="category_id" class="form-control">
+                        <option value="">-- التصنيف --</option>
+                        <?php foreach ($categories as $cat): ?>
+                        <option value="<?= $cat['id'] ?>"><?= htmlspecialchars($cat['name_ar']) ?></option>
+                        <?php endforeach; ?>
+                    </select>
+                    <button type="submit" name="add_external_video" class="btn btn-primary">➕ إضافة</button>
+                </div>
+            </form>
+        </div>
+        
+        <!-- قائمة جميع الفيديوهات الموحدة -->
+        <h3 style="color: var(--gold); margin-bottom: 20px;">📹 جميع الفيديوهات (اسحب لإعادة الترتيب)</h3>
+        
+        <?php
+        // جمع جميع الفيديوهات في مصفوفة موحدة
+        $allVideos = [];
+        
+$externalVideos = $pdo->query("
+            SELECT ev.*, vc.name_ar as category_name, 'external' as source
+            FROM external_videos ev 
+            LEFT JOIN video_categories vc ON ev.category_id = vc.id 
+            ORDER BY ev.display_order, ev.id
+        ")->fetchAll();
+        
+        
+        foreach ($externalVideos as $video) {
+            preg_match('/(?:youtube\.com\/(?:watch\?v=|embed\/|v\/|shorts\/)|youtu\.be\/)([a-zA-Z0-9_-]{11})/i', 
+                       $video['youtube_url'], $matches);
+            $videoId = $matches[1] ?? '';
+            
+            if ($videoId) {
+                $allVideos[] = [
+                    'id' => 'ext_' . $video['id'],
+                    'real_id' => $video['id'],
+                    'source' => 'external',
+                    'title' => $video['title'] ?: 'فيديو خارجي',
+                    'category' => $video['category_name'] ?: 'غير مصنف',
+                    'url' => $video['youtube_url'],
+                    'video_id' => $videoId,
+                    'order' => $video['display_order']
+                ];
+            }
+        }
+        
+        // 2. فيديوهات العرسان من الجدول الجديد
+$groomVideos = $pdo->query("
+            SELECT gv.*, g.groom_name, vc.name_ar as category_name, 'groom_new' as source
+            FROM groom_videos gv
+            JOIN grooms g ON gv.groom_id = g.id
+            LEFT JOIN video_categories vc ON gv.category_id = vc.id
+            WHERE g.is_blocked = 0 AND g.ready = 1
+            ORDER BY gv.display_order, gv.id
+        ")->fetchAll();
+        
+        
+        foreach ($groomVideos as $video) {
+            preg_match('/(?:youtube\.com\/(?:watch\?v=|embed\/|v\/|shorts\/)|youtu\.be\/)([a-zA-Z0-9_-]{11})/i', 
+                       $video['youtube_url'], $matches);
+            $videoId = $matches[1] ?? '';
+            
+            if ($videoId) {
+                $allVideos[] = [
+                    'id' => 'grv_' . $video['id'],
+                    'real_id' => $video['id'],
+                    'source' => 'groom_new',
+                    'title' => $video['title'] ?: $video['groom_name'],
+                    'category' => $video['category_name'] ?: 'كلاسيك',
+                    'url' => $video['youtube_url'],
+                    'video_id' => $videoId,
+                    'groom_id' => $video['groom_id'],
+                    'video_number' => $video['video_number'],
+                    'order' => $video['display_order']
+                ];
+            }
+        }
+        
+        // 3. فيديوهات العرسان من الحقول القديمة
+        $oldGroomVideos = $pdo->query("
+            SELECT id, groom_name, youtube1, youtube2, youtube3, youtube4, youtube5, youtube6, youtube7
+            FROM grooms 
+            WHERE is_blocked = 0 AND ready = 1 
+            AND (youtube1 != '' OR youtube2 != '' OR youtube3 != '' OR youtube4 != '' 
+                 OR youtube5 != '' OR youtube6 != '' OR youtube7 != '')
+        ")->fetchAll();
+        
+        foreach ($oldGroomVideos as $groom) {
+            for ($i = 1; $i <= 7; $i++) {
+                $youtubeField = "youtube{$i}";
+                if (!empty($groom[$youtubeField])) {
+                    // تحقق من التصنيف المحفوظ
+                    $stmt = $pdo->prepare("SELECT id, category_id, display_order FROM groom_videos WHERE groom_id = ? AND video_number = ?");
+                    $stmt->execute([$groom['id'], $i]);
+                    $savedVideo = $stmt->fetch();
+                    
+                    preg_match('/(?:youtube\.com\/(?:watch\?v=|embed\/|v\/|shorts\/)|youtu\.be\/)([a-zA-Z0-9_-]{11})/i', 
+                               $groom[$youtubeField], $matches);
+                    $videoId = $matches[1] ?? '';
+                    
+                    if ($videoId) {
+                        $categoryName = 'غير مصنف';
+                        if ($savedVideo && $savedVideo['category_id']) {
+                            $catStmt = $pdo->prepare("SELECT name_ar FROM video_categories WHERE id = ?");
+                            $catStmt->execute([$savedVideo['category_id']]);
+                            $catResult = $catStmt->fetch();
+                            if ($catResult) $categoryName = $catResult['name_ar'];
+                        }
+                        
+                        $allVideos[] = [
+                            'id' => 'gro_' . $groom['id'] . '_' . $i,
+                            'real_id' => $groom['id'] . '_' . $i,
+                            'source' => 'groom_old',
+                            'title' => $groom['groom_name'] . ' - فيديو ' . $i,
+                            'category' => $categoryName,
+                            'url' => $groom[$youtubeField],
+                            'video_id' => $videoId,
+                            'groom_id' => $groom['id'],
+                            'video_number' => $i,
+                            'order' => $savedVideo['display_order'] ?? 9999
+                        ];
+                    }
+                }
+            }
+        }
+        
+        // ترتيب الفيديوهات حسب display_order
+        usort($allVideos, function($a, $b) {
+            return $a['order'] - $b['order'];
+        });
+        
+        if (empty($allVideos)) {
+            echo '<div style="text-align: center; padding: 40px; color: #666;">
+                    <div style="font-size: 50px; margin-bottom: 15px;">🎬</div>
+                    <p>لا توجد فيديوهات</p>
+                  </div>';
+        } else {
+        ?>
+        
+        <ul class="sortable-list" id="all-videos-list">
+            <?php foreach ($allVideos as $video): ?>
+            <li class="sortable-item" data-id="<?= htmlspecialchars($video['id']) ?>" data-source="<?= $video['source'] ?>">
+                <div style="display: flex; justify-content: space-between; align-items: center; gap: 15px; flex-wrap: wrap;">
+                    <div style="display: flex; align-items: center; gap: 15px; flex: 1;">
+                        <span class="drag-handle" style="font-size: 24px;">☰</span>
+                        
+                        <div style="flex: 1; min-width: 200px;">
+                            <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 5px;">
+                                <strong style="color: white;"><?= htmlspecialchars($video['title']) ?></strong>
+                                <?php if ($video['source'] === 'external'): ?>
+                                <span style="background: rgba(59, 130, 246, 0.2); color: #60A5FA; padding: 3px 10px; border-radius: 12px; font-size: 11px;">خارجي</span>
+                                <?php elseif ($video['source'] === 'groom_new'): ?>
+                                <span style="background: rgba(16, 185, 129, 0.2); color: #10B981; padding: 3px 10px; border-radius: 12px; font-size: 11px;">عريس</span>
+                                <?php else: ?>
+                                <span style="background: rgba(245, 158, 11, 0.2); color: #F59E0B; padding: 3px 10px; border-radius: 12px; font-size: 11px;">قديم</span>
+                                <?php endif; ?>
+                            </div>
+                            
+                            <div style="color: #AAA; font-size: 13px;">
+                                <span><?= htmlspecialchars($video['category']) ?></span>
+                                
+                                <?php 
+                                // ✅ مؤشر الحالة
+                                $isActive = $video['is_active'] ?? 1;
+                                if ($isActive == 0): 
+                                ?>
+                                <span style="background: rgba(239, 68, 68, 0.2); color: #EF4444; padding: 3px 10px; border-radius: 12px; font-size: 11px; margin: 0 10px;">
+                                    🔴 مخفي
+                                </span>
+                                <?php else: ?>
+                                <span style="background: rgba(16, 185, 129, 0.2); color: #10B981; padding: 3px 10px; border-radius: 12px; font-size: 11px; margin: 0 10px;">
+                                    ✅ ظاهر
+                                </span>
+                                <?php endif; ?>
+                                
+                                <span style="margin: 0 10px;">•</span>
+                                <a href="https://www.youtube.com/watch?v=<?= $video['video_id'] ?>" target="_blank" style="color: var(--gold);">
+                                    🔗 عرض
+                                </a>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div style="display: flex; gap: 10px;">
+                        <?php if ($video['source'] === 'groom_old' || $video['source'] === 'groom_new'): ?>
+                        <!-- تحديث التصنيف للفيديوهات القديمة -->
+                        <form method="POST" style="display: inline;">
+                            <input type="hidden" name="groom_id" value="<?= $video['groom_id'] ?>">
+                            <input type="hidden" name="video_number" value="<?= $video['video_number'] ?>">
+                            <input type="hidden" name="youtube_url" value="<?= htmlspecialchars($video['url']) ?>">
+                            <select name="category_id" class="form-control" style="width: auto; display: inline-block; padding: 8px;" onchange="this.form.submit()">
+                                <option value="">-- تصنيف --</option>
+                                <?php foreach ($categories as $cat): ?>
+                                <option value="<?= $cat['id'] ?>" <?= (strpos($video['category'], $cat['name_ar']) !== false) ? 'selected' : '' ?>>
+                                    <?= htmlspecialchars($cat['name_ar']) ?>
+                                </option>
+                                <?php endforeach; ?>
+                            </select>
+                            <input type="hidden" name="update_groom_video_category" value="1">
+                        </form>
+                        
+                       <?php 
+                        $isActive = $video['is_active'] ?? 1;
+                        ?>
+                        
+                        <form method="POST" style="display: inline; margin-left: 5px;">
+                            <input type="hidden" name="video_id" value="<?= $video['real_id'] ?>">
+                            <input type="hidden" name="video_type" value="groom">
+                            <button type="submit" name="toggle_video_active" class="btn btn-small <?= $isActive ? 'btn-secondary' : 'btn-primary' ?>">
+                                <?= $isActive ? '👁️‍🗨️ إخفاء' : '👁️ إظهار' ?>
+                            </button>
+                        </form>
+                        
+                        <form method="POST" onsubmit="return confirm('هل تريد حذف هذا الفيديو؟')" style="display: inline;">
+                            <input type="hidden" name="groom_id" value="<?= $video['groom_id'] ?>">
+                            <input type="hidden" name="video_number" value="<?= $video['video_number'] ?>">
+                            <button type="submit" name="hide_groom_video" class="btn btn-small btn-danger">🗑️</button>
+                        </form>
+                        <?php else: ?>
+                        <!-- حذف الفيديوهات الخارجية -->
+                        <?php 
+                        $isActive = $video['is_active'] ?? 1;
+                        $videoType = ($video['source'] === 'external') ? 'external' : 'groom';
+                        ?>
+                        
+                        <form method="POST" style="display: inline; margin-left: 5px;">
+                            <input type="hidden" name="video_id" value="<?= $video['real_id'] ?>">
+                            <input type="hidden" name="video_type" value="<?= $videoType ?>">
+                            <button type="submit" name="toggle_video_active" class="btn btn-small <?= $isActive ? 'btn-secondary' : 'btn-primary' ?>">
+                                <?= $isActive ? '👁️‍🗨️ إخفاء' : '👁️ إظهار' ?>
+                            </button>
+                        </form>
+                        
+                        <form method="POST" onsubmit="return confirm('هل أنت متأكد؟')" style="display: inline;">
+                            <input type="hidden" name="video_id" value="<?= $video['real_id'] ?>">
+                            <button type="submit" name="delete_video" class="btn btn-small btn-danger">🗑️ حذف</button>
+                        </form>
+                        <?php endif; ?>
+                    </div>
+                </div>
+            </li>
+            <?php endforeach; ?>
+        </ul>
+        
+        <button onclick="saveAllVideosOrder()" class="btn btn-primary" style="margin-top: 20px; width: 100%; padding: 15px; font-size: 16px;">
+            💾 حفظ ترتيب جميع الفيديوهات
+        </button>
+        
+        <?php } ?>
+    </div>
+</div>
+
+        <!-- تبويب العرسان -->
+        <div id="grooms-tab" class="tab-content">
+            <div class="section">
+                <h2 class="section-title">إدارة العرسان</h2>
+                
+                <div class="info-box" style="margin-bottom: 20px;">
+                    <?php if (($settings['auto_show_grooms'] ?? 0) == 1): ?>
+                        <strong>✅ الإظهار التلقائي مفعّل:</strong> صفحات العرسان الجديدة تظهر في المعرض تلقائياً.
+                        <a href="#settings-tab" onclick="showTab('settings')" style="color: var(--gold); text-decoration: underline;">قم بتعطيل الإظهار التلقائي من الإعدادات</a> للتحكم اليدوي.
+                    <?php else: ?>
+                        <strong>⚙️ التحكم اليدوي مفعّل:</strong> صفحات العرسان الجديدة مخفية افتراضياً، قم بتفعيل الصندوق بجانب كل عريس لإظهاره في المعرض.
+                    <?php endif; ?>
+                </div>
+                
+                <?php
+                $grooms = $pdo->query("SELECT g.*, COUNT(gp.id) as photo_count FROM grooms g LEFT JOIN groom_photos gp ON g.id = gp.groom_id AND gp.hidden = 0 WHERE g.is_blocked = 0 AND g.ready = 1 GROUP BY g.id ORDER BY g.display_order DESC, g.id DESC LIMIT 50")->fetchAll();
+                ?>
+                
+                <ul class="sortable-list" id="grooms-list">
+                    <?php foreach ($grooms as $groom): ?>
+                    <li class="sortable-item" data-id="<?= $groom['id'] ?>">
+                        <div style="display: flex; justify-content: space-between; align-items: center;">
+                            <div>
+                                <strong><?= htmlspecialchars($groom['groom_name']) ?></strong>
+                                <span style="color: #AAA; margin-right: 10px;"><?= $groom['photo_count'] ?> صورة</span>
+                            </div>
+                            <div>
+                                <form method="POST" style="display: inline;">
+                                    <input type="hidden" name="groom_id" value="<?= $groom['id'] ?>">
+                                    <input type="hidden" name="toggle_gallery" value="1">
+                                    <input type="checkbox" name="show_in_gallery" value="1" 
+                                           <?= $groom['show_in_gallery'] ? 'checked' : '' ?>
+                                           onchange="this.form.submit()"
+                                           style="width: 20px; height: 20px; cursor: pointer;">
+                                </form>
+                            </div>
+                        </div>
+                    </li>
+                    <?php endforeach; ?>
+                </ul>
+                <button onclick="saveGroomsOrder()" class="btn btn-primary" style="margin-top: 20px;">💾 حفظ الترتيب</button>
+            </div>
+        </div>
+        
+        <!-- تبويب الإعدادات -->
+        <div id="settings-tab" class="tab-content">
+            <div class="section">
+                <h2 class="section-title">⚙️ إعدادات المعرض</h2>
+                
+                <form method="POST">
+                    <div class="form-group">
+                        <label style="color: var(--gold); display: block; margin-bottom: 10px;">عدد الصور المعروضة في المعرض</label>
+                        <input type="number" name="photos_limit" value="<?= $settings['photos_limit'] ?? 30 ?>" 
+                               class="form-control" min="1" max="100" required>
+                        <small style="color: #888;">الحد الأدنى: 1، الحد الأقصى: 100</small>
+                    </div>
+                    
+                    <div class="form-group">
+                        <label style="color: var(--gold); display: block; margin-bottom: 10px;">Instagram Access Token</label>
+                        <textarea name="instagram_token" class="form-control" rows="3" 
+                                  placeholder="ضع توكن Instagram API هنا"><?= htmlspecialchars($settings['instagram_token'] ?? '') ?></textarea>
+                        <small style="color: #888;">احصل على التوكن من: <a href="https://developers.facebook.com/docs/instagram-basic-display-api" target="_blank" style="color: var(--gold);">Instagram API</a></small>
+                    </div>
+                    
+                    <div class="form-group">
+                        <label style="display: flex; align-items: center; gap: 10px; cursor: pointer;">
+                            <input type="checkbox" name="instagram_enabled" value="1" 
+                                   <?= ($settings['instagram_enabled'] ?? 0) ? 'checked' : '' ?>
+                                   style="width: 20px; height: 20px;">
+                            <span>تفعيل عرض Instagram Feed</span>
+                        </label>
+                    </div>
+                    
+                    <hr style="border: 1px solid rgba(255, 215, 0, 0.2); margin: 30px 0;">
+                    
+                    <h3 style="color: var(--gold); margin-bottom: 20px;">🎛️ التحكم في المحتوى الجديد</h3>
+                    
+                    <div class="info-box">
+                        <strong>ℹ️ تنبيه:</strong> هذه الإعدادات تتحكم في كيفية ظهور المحتوى الجديد في المعرض بشكل تلقائي
+                    </div>
+                    
+                    <div class="form-group" style="background: rgba(255, 255, 255, 0.05); padding: 20px; border-radius: 10px; margin-bottom: 15px;">
+                        <label style="display: flex; align-items: center; gap: 15px; cursor: pointer;">
+                            <input type="checkbox" name="auto_feature_photos" value="1" 
+                                   <?= ($settings['auto_feature_photos'] ?? 0) ? 'checked' : '' ?>
+                                   style="width: 25px; height: 25px;">
+                            <div>
+                                <strong style="color: var(--gold); display: block; font-size: 16px;">⭐ تمييز الصور الجديدة تلقائياً</strong>
+                                <small style="color: #AAA; display: block; margin-top: 5px;">
+                                    عند التفعيل: أي صورة يتم تمييزها في صفحة العريس تظهر مباشرة في قسم "الصور المميزة" بالمعرض<br>
+                                    عند الإيقاف: الصور المميزة في صفحة العريس تظهر في قسم "تمييز صور" وتحتاج موافقتك اليدوية
+                                </small>
+                            </div>
+                        </label>
+                    </div>
+                    
+                    <div class="form-group" style="background: rgba(255, 255, 255, 0.05); padding: 20px; border-radius: 10px; margin-bottom: 15px;">
+                        <label style="display: flex; align-items: center; gap: 15px; cursor: pointer;">
+                            <input type="checkbox" name="auto_show_grooms" value="1" 
+                                   <?= ($settings['auto_show_grooms'] ?? 0) ? 'checked' : '' ?>
+                                   style="width: 25px; height: 25px;">
+                            <div>
+                                <strong style="color: var(--gold); display: block; font-size: 16px;">👰 إظهار صفحات العرسان الجديدة تلقائياً</strong>
+                                <small style="color: #AAA; display: block; margin-top: 5px;">
+                                    عند التفعيل: أي صفحة عريس جديدة تظهر مباشرة في المعرض<br>
+                                    عند الإيقاف: صفحات العرسان الجديدة تكون مخفية وتحتاج تفعيلها يدوياً من قسم "العرسان"
+                                </small>
+                            </div>
+                        </label>
+                    </div>
+                    
+                    <div class="form-group" style="background: rgba(255, 255, 255, 0.05); padding: 20px; border-radius: 10px; margin-bottom: 15px;">
+                        <label style="display: flex; align-items: center; gap: 15px; cursor: pointer;">
+                            <input type="checkbox" name="auto_show_videos" value="1" 
+                                   <?= ($settings['auto_show_videos'] ?? 0) ? 'checked' : '' ?>
+                                   style="width: 25px; height: 25px;">
+                            <div>
+                                <strong style="color: var(--gold); display: block; font-size: 16px;">🎥 إظهار الفيديوهات الجديدة تلقائياً</strong>
+                                <small style="color: #AAA; display: block; margin-top: 5px;">
+                                    عند التفعيل: أي فيديو جديد (من صفحات العرسان أو خارجي) يظهر مباشرة في المعرض<br>
+                                    عند الإيقاف: الفيديوهات الجديدة تكون مخفية وتحتاج تفعيلها يدوياً من قسم "الفيديوهات"
+                                </small>
+                            </div>
+                        </label>
+                    </div>
+                    
+                    <div class="form-group" style="background: rgba(255, 255, 255, 0.05); padding: 20px; border-radius: 10px; margin-bottom: 15px;">
+    <label style="display: flex; align-items: center; gap: 15px; cursor: pointer;">
+        <input type="checkbox" name="show_groom_featured_in_gallery" value="1" 
+               <?= ($settings['show_groom_featured_in_gallery'] ?? 0) ? 'checked' : '' ?>
+               style="width: 25px; height: 25px;">
+        <div>
+            <strong style="color: var(--gold); display: block; font-size: 16px;">📸 إضافة صور العرسان المميزة في المعرض</strong>
+            <small style="color: #AAA; display: block; margin-top: 5px;">
+                عند التفعيل: يتم عرض صور المعرض أولاً، ثم الصور المميزة من صفحات العرسان<br>
+                عند الإيقاف: يتم عرض صور المعرض فقط (الصور المميزة للمعرض)
+            </small>
+        </div>
+    </label>
+</div>
+
+                    
+                    <button type="submit" name="save_settings" class="btn btn-primary" style="width: 100%; padding: 15px; font-size: 16px;">
+                        💾 حفظ جميع الإعدادات
+                    </button>
+                </form>
+            </div>
+        </div>
+    </div>
+    
+    <script src="https://cdn.jsdelivr.net/npm/sortablejs@latest/Sortable.min.js"></script>
+    <script>
+    let currentTab = localStorage.getItem('adminCurrentTab') || 'featured';
+
+    function showTab(tabName) {
+        document.querySelectorAll('.tab-content').forEach(content => {
+            content.classList.remove('active');
+            content.style.display = 'none';
+        });
+        
+        const targetTab = document.getElementById(tabName + '-tab');
+        if (targetTab) {
+            targetTab.classList.add('active');
+            targetTab.style.display = 'block';
+        }
+        
+        document.querySelectorAll('.tab').forEach(tab => {
+            tab.classList.remove('active');
+        });
+        event.target.classList.add('active');
+        
+        localStorage.setItem('adminCurrentTab', tabName);
+        currentTab = tabName;
+    }
+
+    document.addEventListener('DOMContentLoaded', function() {
+        document.querySelectorAll('.tab-content').forEach((content, index) => {
+            content.style.display = 'none';
+            content.classList.remove('active');
+        });
+        
+        const savedTab = document.getElementById(currentTab + '-tab');
+        if (savedTab) {
+            savedTab.classList.add('active');
+            savedTab.style.display = 'block';
+        }
+        
+        document.querySelectorAll('.tab').forEach(tab => {
+            tab.classList.remove('active');
+            if (tab.textContent.includes(getTabLabel(currentTab))) {
+                tab.classList.add('active');
+            }
+        });
+        
+        const urlParams = new URLSearchParams(window.location.search);
+        if (urlParams.has('featured_page')) {
+            showTab('featured');
+        } else if (urlParams.has('mark_page')) {
+            showTab('mark');
+        }
+        
+        initializeSortable();
+    });
+
+    function getTabLabel(tabName) {
+        const labels = {
+            'featured': 'الصور المميزة',
+            'mark': 'تمييز صور',
+            'upload': 'رفع صور',
+            'photographers': 'المصورين',
+            'categories': 'التصنيفات',
+            'videos': 'الفيديوهات',
+            'grooms': 'العرسان',
+            'settings': 'الإعدادات'
+        };
+        return labels[tabName] || '';
+    }
+
+    function initializeSortable() {
+        let imagesGrid = document.getElementById('uploaded-images-grid');
+        if (imagesGrid && typeof Sortable !== 'undefined') {
+            new Sortable(imagesGrid, {
+                animation: 200,
+                ghostClass: 'sortable-ghost',
+                forceFallback: true,
+                fallbackTolerance: 3,
+                touchStartThreshold: 5
+            });
+        }
+        
+        let photographersGrid = document.getElementById('photographers-grid');
+        if (photographersGrid && typeof Sortable !== 'undefined') {
+            new Sortable(photographersGrid, {
+                animation: 200,
+                ghostClass: 'sortable-ghost',
+                forceFallback: true
+            });
+        }
+        
+        let categoriesGrid = document.getElementById('categories-grid');
+        if (categoriesGrid && typeof Sortable !== 'undefined') {
+            new Sortable(categoriesGrid, {
+                animation: 200,
+                ghostClass: 'sortable-ghost',
+                forceFallback: true
+            });
+        }
+        
+        let videosList = document.getElementById('videos-list');
+        if (videosList && typeof Sortable !== 'undefined') {
+            new Sortable(videosList, {
+                animation: 200,
+                handle: '.drag-handle',
+                ghostClass: 'sortable-ghost',
+                forceFallback: true
+            });
+        }
+        
+        let groomsList = document.getElementById('grooms-list');
+        if (groomsList && typeof Sortable !== 'undefined') {
+            new Sortable(groomsList, {
+                animation: 200,
+                ghostClass: 'sortable-ghost',
+                forceFallback: true
+            });
+        }
+    }
+
+    function saveOrder(gridId, action) {
+        let items = document.querySelectorAll(`#${gridId} [data-id]`);
+        let orders = {};
+        items.forEach((item, index) => {
+            orders[item.dataset.id] = index;
+        });
+        
+        fetch('', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+            body: `${action}=1&orders=` + encodeURIComponent(JSON.stringify(orders))
+        }).then(response => {
+            if (response.ok) {
+                alert('✅ تم حفظ الترتيب بنجاح');
+                location.reload();
+            } else {
+                alert('❌ حدث خطأ أثناء الحفظ');
+            }
+        }).catch(error => {
+            alert('❌ خطأ: ' + error.message);
+        });
+    }
+
+    function saveImagesOrder() { saveOrder('uploaded-images-grid', 'update_images_order'); }
+    function saveGroomsOrder() { saveOrder('grooms-list', 'update_grooms_order'); }
+    function saveVideosOrder() { saveOrder('videos-list', 'update_videos_order'); }
+    function saveCategoriesOrder() { saveOrder('categories-grid', 'update_categories_order'); }
+    function savePhotographersOrder() { saveOrder('photographers-grid', 'update_photographers_order'); }
+
+    document.addEventListener('selectstart', function(e) {
+        if (e.target.closest('.sortable-item, .photo-card, .photographer-card')) {
+            e.preventDefault();
+        }
+    });
+
+    const images = document.querySelectorAll('.photo-card img');
+    images.forEach(img => {
+        img.addEventListener('error', function() {
+            console.warn('Failed to load image:', this.src);
+            this.style.display = 'none';
+            const card = this.closest('.photo-card');
+            if (card) {
+                card.style.border = '2px dashed rgba(255, 215, 0, 0.3)';
+                card.style.background = 'rgba(255, 255, 255, 0.02)';
+            }
+        });
+    });
+    
+    // ترتيب جميع الفيديوهات
+let allVideosList = document.getElementById('all-videos-list');
+if (allVideosList && typeof Sortable !== 'undefined') {
+    new Sortable(allVideosList, {
+        animation: 200,
+        handle: '.drag-handle',
+        ghostClass: 'sortable-ghost',
+        forceFallback: true
+    });
+}
+
+function saveAllVideosOrder() {
+    let items = document.querySelectorAll('#all-videos-list [data-id]');
+    let orders = {};
+    items.forEach((item, index) => {
+        orders[item.dataset.id] = index;
+    });
+    
+    fetch('', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+        body: 'update_all_videos_order=1&orders=' + encodeURIComponent(JSON.stringify(orders))
+    }).then(response => {
+        if (response.ok) {
+            alert('✅ تم حفظ ترتيب جميع الفيديوهات بنجاح');
+            location.reload();
+        } else {
+            alert('❌ حدث خطأ أثناء الحفظ');
+        }
+    }).catch(error => {
+        alert('❌ خطأ: ' + error.message);
+    });
+}
+
+
+    </script>
+</body>
+</html>

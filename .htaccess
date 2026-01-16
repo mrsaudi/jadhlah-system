@@ -1,0 +1,5 @@
+Redirect 301 /redirect/portfolio https://jadhlah.com/
+Redirect 301 /redirect/2 https://jadhlah.com/gallery.php
+Redirect 301 /2 https://jadhlah.com/gallery.php
+Redirect 301 /5 https://jadhlah.com/gallery.php
+Redirect 301 /11 https://jadhlah.com/landing.php

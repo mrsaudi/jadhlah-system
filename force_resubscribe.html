@@ -1,0 +1,231 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>إعادة تعيين الإشعارات</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 50px auto;
+            padding: 20px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+        }
+        .container {
+            background: white;
+            color: #333;
+            padding: 30px;
+            border-radius: 15px;
+            box-shadow: 0 10px 40px rgba(0,0,0,0.3);
+        }
+        h1 { color: #667eea; }
+        button {
+            background: #667eea;
+            color: white;
+            padding: 15px 30px;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 16px;
+            margin: 10px 5px;
+            width: 100%;
+        }
+        button:hover { background: #5568d3; }
+        button:disabled { 
+            background: #ccc; 
+            cursor: not-allowed;
+        }
+        #log {
+            background: #1e1e1e;
+            color: #d4d4d4;
+            padding: 20px;
+            border-radius: 8px;
+            margin-top: 20px;
+            font-family: 'Courier New', monospace;
+            white-space: pre-wrap;
+            max-height: 400px;
+            overflow-y: auto;
+            font-size: 13px;
+        }
+        .success { color: #4ade80; font-weight: bold; }
+        .error { color: #f87171; font-weight: bold; }
+        .info { color: #60a5fa; }
+        .warning { color: #fbbf24; }
+        .step {
+            background: #f3f4f6;
+            padding: 15px;
+            margin: 10px 0;
+            border-radius: 8px;
+            border-left: 4px solid #667eea;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🔄 إعادة تعيين نظام الإشعارات</h1>
+        
+        <div class="step">
+            <h3>📋 الخطوات:</h3>
+            <ol>
+                <li>إلغاء جميع الاشتراكات القديمة</li>
+                <li>مسح Service Workers</li>
+                <li>مسح Cache</li>
+                <li>إنشاء اشتراك جديد تماماً</li>
+                <li>اختبار الإشعار</li>
+            </ol>
+        </div>
+        
+        <label style="display: block; margin: 15px 0;">
+            <strong>Groom ID:</strong>
+            <input type="number" id="groomId" value="1111" style="padding: 10px; margin: 5px 0; width: 100%; border: 2px solid #ddd; border-radius: 5px;">
+        </label>
+        
+        <button id="resetBtn" onclick="completeReset()">🚀 بدء إعادة التعيين الكاملة</button>
+        
+        <div id="log"></div>
+    </div>
+
+    <script>
+        const log = document.getElementById('log');
+        const btn = document.getElementById('resetBtn');
+        
+        function addLog(msg, type = 'info') {
+            const time = new Date().toLocaleTimeString('ar-SA');
+            log.innerHTML += `<span class="${type}">[${time}] ${msg}</span>\n`;
+            log.scrollTop = log.scrollHeight;
+        }
+        
+        async function completeReset() {
+            btn.disabled = true;
+            log.innerHTML = '';
+            const groomId = parseInt(document.getElementById('groomId').value);
+            
+            addLog('🔄 بدء عملية إعادة التعيين الكاملة...', 'info');
+            
+            try {
+                // Step 1: إلغاء جميع الاشتراكات
+                addLog('\n📌 الخطوة 1: إلغاء الاشتراكات القديمة', 'warning');
+                
+                const registration = await navigator.serviceWorker.getRegistration();
+                if (registration) {
+                    const subscription = await registration.pushManager.getSubscription();
+                    if (subscription) {
+                        addLog('🗑️ وجدنا اشتراك قديم، جاري الإلغاء...', 'info');
+                        await subscription.unsubscribe();
+                        addLog('✅ تم إلغاء الاشتراك القديم', 'success');
+                    } else {
+                        addLog('ℹ️ لا يوجد اشتراك قديم', 'info');
+                    }
+                }
+                
+                // Step 2: مسح Service Workers
+                addLog('\n📌 الخطوة 2: مسح Service Workers', 'warning');
+                const registrations = await navigator.serviceWorker.getRegistrations();
+                for (let reg of registrations) {
+                    await reg.unregister();
+                    addLog('✅ تم مسح Service Worker: ' + reg.scope, 'success');
+                }
+                
+                // Step 3: مسح Cache
+                addLog('\n📌 الخطوة 3: مسح Cache', 'warning');
+                const cacheNames = await caches.keys();
+                for (let name of cacheNames) {
+                    await caches.delete(name);
+                    addLog('✅ تم مسح Cache: ' + name, 'success');
+                }
+                
+                addLog('\n⏳ انتظار 2 ثانية...', 'info');
+                await new Promise(resolve => setTimeout(resolve, 2000));
+                
+                // Step 4: تسجيل Service Worker جديد
+                addLog('\n📌 الخطوة 4: تسجيل Service Worker جديد', 'warning');
+                const newReg = await navigator.serviceWorker.register('/sw.js');
+                await navigator.serviceWorker.ready;
+                addLog('✅ Service Worker جديد مسجل وجاهز', 'success');
+                
+                // Step 5: طلب الإذن
+                addLog('\n📌 الخطوة 5: طلب إذن الإشعارات', 'warning');
+                const permission = await Notification.requestPermission();
+                if (permission !== 'granted') {
+                    throw new Error('تم رفض إذن الإشعارات');
+                }
+                addLog('✅ تم منح الإذن', 'success');
+                
+                // Step 6: إنشاء اشتراك جديد تماماً
+                addLog('\n📌 الخطوة 6: إنشاء اشتراك جديد', 'warning');
+                
+                const vapidPublicKey = 'BIxYJhtuWzU00qHiGLpXE7RXbsdkapV4870OniWKAWedC1iCfxVMbiXLU7-CIngtuTM8IYcQ9j4PbVBFOiMOyhw';
+                
+                function urlBase64ToUint8Array(base64String) {
+                    const padding = '='.repeat((4 - base64String.length % 4) % 4);
+                    const base64 = (base64String + padding).replace(/\-/g, '+').replace(/_/g, '/');
+                    const rawData = window.atob(base64);
+                    const outputArray = new Uint8Array(rawData.length);
+                    for (let i = 0; i < rawData.length; ++i) {
+                        outputArray[i] = rawData.charCodeAt(i);
+                    }
+                    return outputArray;
+                }
+                
+                const newSubscription = await newReg.pushManager.subscribe({
+                    userVisibleOnly: true,
+                    applicationServerKey: urlBase64ToUint8Array(vapidPublicKey)
+                });
+                
+                addLog('✅ تم إنشاء الاشتراك الجديد', 'success');
+                addLog('📋 Endpoint: ' + newSubscription.endpoint.substring(0, 80) + '...', 'info');
+                
+                // Step 7: إرسال للسيرفر
+                addLog('\n📌 الخطوة 7: حفظ الاشتراك في السيرفر', 'warning');
+                
+                const response = await fetch('/api/subscribe_push.php', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        groom_id: groomId,
+                        subscription: newSubscription.toJSON()
+                    })
+                });
+                
+                const result = await response.json();
+                
+                if (result.success) {
+                    addLog('✅ تم حفظ الاشتراك بنجاح!', 'success');
+                } else {
+                    throw new Error('فشل حفظ الاشتراك: ' + result.error);
+                }
+                
+                // Step 8: اختبار الإشعار
+                addLog('\n📌 الخطوة 8: اختبار إرسال الإشعار', 'warning');
+                
+                const testResponse = await fetch('/api/send_notifications.php', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ groom_id: groomId })
+                });
+                
+                const testResult = await testResponse.json();
+                
+                if (testResult.success && testResult.sent > 0) {
+                    addLog('✅✅✅ نجح! تم إرسال ' + testResult.sent + ' إشعار!', 'success');
+                    addLog('🔔 تحقق من إشعاراتك الآن!', 'success');
+                } else {
+                    addLog('⚠️ تم التسجيل لكن: ' + JSON.stringify(testResult), 'warning');
+                }
+                
+                addLog('\n✨ اكتملت جميع الخطوات بنجاح!', 'success');
+                
+            } catch (error) {
+                addLog('\n❌ خطأ: ' + error.message, 'error');
+                console.error(error);
+            } finally {
+                btn.disabled = false;
+            }
+        }
+        
+        addLog('✅ الصفحة جاهزة - اضغط الزر للبدء', 'success');
+    </script>
+</body>
+</html>

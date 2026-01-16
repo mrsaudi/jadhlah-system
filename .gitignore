@@ -1,0 +1,33 @@
+# بيانات حساسة
+config.php
+includes/config.php
+admin/config.php
+.env
+
+# ملفات قاعدة البيانات
+*.sql
+backup/
+database_backup/
+
+# الصور المرفوعة (حجمها كبير)
+uploads/*
+!uploads/.gitkeep
+photos/*
+!photos/.gitkeep
+galleries/*/photos/*
+!galleries/*/.gitkeep
+
+# ملفات مؤقتة
+*.log
+*.tmp
+error_log
+debug.log
+
+# نظام التشغيل
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# أدوات
+vendor/
+node_modules/
