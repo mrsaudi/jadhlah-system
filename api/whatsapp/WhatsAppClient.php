@@ -5,7 +5,13 @@
  * ============================================
  * 
  * الملف: api/whatsapp/WhatsAppClient.php
- * الوظيفة: كلاس رئيسي للتعامل مع WhatsApp Business API
+ * آخر تحديث: 17 يناير 2026
+ * 
+ * دعم كامل لـ:
+ * - رسائل نصية
+ * - قوالب مع متغيرات
+ * - أزرار تفاعلية
+ * - إرسال صور ومستندات
  */
 
 class WhatsAppClient {
@@ -21,8 +27,9 @@ class WhatsAppClient {
      */
     public function __construct($config = null) {
         if ($config === null) {
-            // تحميل من ملف الإعدادات
-            define('JADHLAH_APP', true);
+            if (!defined('JADHLAH_APP')) {
+                define('JADHLAH_APP', true);
+            }
             require_once __DIR__ . '/../../config/whatsapp.php';
             $config = WHATSAPP_CONFIG;
         }
@@ -36,10 +43,6 @@ class WhatsAppClient {
     
     /**
      * إرسال رسالة نصية بسيطة
-     * 
-     * @param string $to رقم الهاتف (مع كود الدولة)
-     * @param string $message نص الرسالة
-     * @return array
      */
     public function sendTextMessage($to, $message) {
         $to = $this->formatPhoneNumber($to);
@@ -59,15 +62,17 @@ class WhatsAppClient {
     }
     
     /**
-     * إرسال رسالة قالب (Template Message)
+     * إرسال رسالة قالب (Template Message) - محدثة
      * 
      * @param string $to رقم الهاتف
      * @param string $templateName اسم القالب
      * @param string $language لغة القالب
-     * @param array $components متغيرات القالب
+     * @param array $variables متغيرات القالب (مصفوفة بسيطة)
+     * @param array $headerParams معاملات الهيدر (صورة/مستند)
+     * @param array $buttons أزرار ديناميكية
      * @return array
      */
-    public function sendTemplate($to, $templateName, $language = 'ar', $components = []) {
+    public function sendTemplate($to, $templateName, $language = 'ar', $variables = [], $headerParams = null, $buttons = null) {
         $to = $this->formatPhoneNumber($to);
         
         $payload = [
@@ -83,7 +88,70 @@ class WhatsAppClient {
             ]
         ];
         
-        // إضافة المتغيرات إذا وجدت
+        // بناء الـ components
+        $components = [];
+        
+        // 1. Header (صورة أو مستند)
+        if ($headerParams) {
+            $headerComponent = ['type' => 'header'];
+            
+            if (isset($headerParams['image'])) {
+                $headerComponent['parameters'] = [[
+                    'type' => 'image',
+                    'image' => ['link' => $headerParams['image']]
+                ]];
+            } elseif (isset($headerParams['document'])) {
+                $headerComponent['parameters'] = [[
+                    'type' => 'document',
+                    'document' => [
+                        'link' => $headerParams['document'],
+                        'filename' => $headerParams['filename'] ?? 'document.pdf'
+                    ]
+                ]];
+            } elseif (isset($headerParams['text'])) {
+                $headerComponent['parameters'] = [[
+                    'type' => 'text',
+                    'text' => $headerParams['text']
+                ]];
+            }
+            
+            $components[] = $headerComponent;
+        }
+        
+        // 2. Body (المتغيرات)
+        if (!empty($variables)) {
+            $bodyParams = [];
+            foreach ($variables as $value) {
+                $bodyParams[] = [
+                    'type' => 'text',
+                    'text' => (string) $value
+                ];
+            }
+            
+            $components[] = [
+                'type' => 'body',
+                'parameters' => $bodyParams
+            ];
+        }
+        
+        // 3. Buttons (أزرار ديناميكية)
+        if ($buttons) {
+            foreach ($buttons as $index => $button) {
+                if (isset($button['url_suffix'])) {
+                    // زر URL ديناميكي
+                    $components[] = [
+                        'type' => 'button',
+                        'sub_type' => 'url',
+                        'index' => $index,
+                        'parameters' => [[
+                            'type' => 'text',
+                            'text' => $button['url_suffix']
+                        ]]
+                    ];
+                }
+            }
+        }
+        
         if (!empty($components)) {
             $payload['template']['components'] = $components;
         }
@@ -92,42 +160,112 @@ class WhatsAppClient {
     }
     
     /**
-     * إرسال إشعار جاهزية الصور
-     * 
-     * @param string $to رقم الهاتف
-     * @param string $groomName اسم العريس
-     * @param string $pageUrl رابط الصفحة
-     * @return array
+     * إرسال إشعار جاهزية الصور (الدالة القديمة - للتوافق)
      */
     public function sendPhotosReadyNotification($to, $groomName, $pageUrl) {
-        $components = [
-            [
-                'type' => 'body',
-                'parameters' => [
-                    [
-                        'type' => 'text',
-                        'text' => $groomName
-                    ],
-                    [
-                        'type' => 'text',
-                        'text' => $pageUrl
-                    ]
-                ]
-            ]
-        ];
-        
-        return $this->sendTemplate($to, 'grooms_ready', 'ar', $components);
+        return $this->sendTemplate($to, 'grooms_ready', 'ar', [$groomName, $pageUrl]);
     }
     
     /**
-     * إرسال رسالة مع أزرار
-     * 
-     * @param string $to رقم الهاتف
-     * @param string $body نص الرسالة
-     * @param array $buttons الأزرار
-     * @return array
+     * إرسال قالب حجز جديد
      */
-    public function sendInteractiveButtons($to, $body, $buttons) {
+    public function sendBookingConfirmation($to, $groomName, $weddingDate, $packageName, $totalPrice) {
+        return $this->sendTemplate(
+            $to, 
+            'booking_confirmation', 
+            'ar', 
+            [$groomName, $weddingDate, $packageName, $totalPrice]
+        );
+    }
+    
+    /**
+     * إرسال طلب تنسيق
+     */
+    public function sendCoordinationRequest($to, $groomName, $coordinationLink) {
+        return $this->sendTemplate(
+            $to, 
+            'coordination_request', 
+            'ar', 
+            [$groomName, $coordinationLink]
+        );
+    }
+    
+    /**
+     * إرسال إشعار تعيين للموظف
+     */
+    public function sendTeamAssignment($to, $employeeName, $groomName, $date, $venue, $time) {
+        return $this->sendTemplate(
+            $to, 
+            'team_assignment', 
+            'ar', 
+            [$employeeName, $groomName, $date, $venue, $time]
+        );
+    }
+    
+    /**
+     * إرسال تذكير للعريس
+     */
+    public function sendGroomReminder($to, $groomName, $venue, $paymentNote = '') {
+        return $this->sendTemplate(
+            $to, 
+            'reminder_groom', 
+            'ar', 
+            [$groomName, $venue, $paymentNote]
+        );
+    }
+    
+    /**
+     * إرسال تذكير للفريق
+     */
+    public function sendTeamReminder($to, $groomName, $venue, $time) {
+        return $this->sendTemplate(
+            $to, 
+            'reminder_team', 
+            'ar', 
+            [$groomName, $venue, $time]
+        );
+    }
+    
+    /**
+     * إرسال إشعار بدء المعالجة
+     */
+    public function sendProcessingStart($to, $groomName, $deliveryDate) {
+        return $this->sendTemplate(
+            $to, 
+            'processing_start', 
+            'ar', 
+            [$groomName, $deliveryDate]
+        );
+    }
+    
+    /**
+     * إرسال طلب تقييم
+     */
+    public function sendReviewRequest($to, $groomName, $reviewLink) {
+        return $this->sendTemplate(
+            $to, 
+            'review_request', 
+            'ar', 
+            [$groomName, $reviewLink]
+        );
+    }
+    
+    /**
+     * إرسال شكر وتوديع
+     */
+    public function sendThankYou($to, $groomName) {
+        return $this->sendTemplate(
+            $to, 
+            'thank_you', 
+            'ar', 
+            [$groomName]
+        );
+    }
+    
+    /**
+     * إرسال رسالة مع أزرار تفاعلية
+     */
+    public function sendInteractiveButtons($to, $body, $buttons, $header = null, $footer = null) {
         $to = $this->formatPhoneNumber($to);
         
         $formattedButtons = [];
@@ -135,10 +273,24 @@ class WhatsAppClient {
             $formattedButtons[] = [
                 'type' => 'reply',
                 'reply' => [
-                    'id' => 'btn_' . ($index + 1),
-                    'title' => substr($button['title'], 0, 20) // الحد الأقصى 20 حرف
+                    'id' => $button['id'] ?? 'btn_' . ($index + 1),
+                    'title' => substr($button['title'], 0, 20)
                 ]
             ];
+        }
+        
+        $interactive = [
+            'type' => 'button',
+            'body' => ['text' => $body],
+            'action' => ['buttons' => array_slice($formattedButtons, 0, 3)]
+        ];
+        
+        if ($header) {
+            $interactive['header'] = ['type' => 'text', 'text' => $header];
+        }
+        
+        if ($footer) {
+            $interactive['footer'] = ['text' => $footer];
         }
         
         $payload = [
@@ -146,15 +298,41 @@ class WhatsAppClient {
             'recipient_type' => 'individual',
             'to' => $to,
             'type' => 'interactive',
-            'interactive' => [
-                'type' => 'button',
-                'body' => [
-                    'text' => $body
-                ],
-                'action' => [
-                    'buttons' => $formattedButtons
-                ]
+            'interactive' => $interactive
+        ];
+        
+        return $this->sendRequest($payload);
+    }
+    
+    /**
+     * إرسال قائمة تفاعلية
+     */
+    public function sendInteractiveList($to, $body, $buttonText, $sections, $header = null, $footer = null) {
+        $to = $this->formatPhoneNumber($to);
+        
+        $interactive = [
+            'type' => 'list',
+            'body' => ['text' => $body],
+            'action' => [
+                'button' => substr($buttonText, 0, 20),
+                'sections' => $sections
             ]
+        ];
+        
+        if ($header) {
+            $interactive['header'] = ['type' => 'text', 'text' => $header];
+        }
+        
+        if ($footer) {
+            $interactive['footer'] = ['text' => $footer];
+        }
+        
+        $payload = [
+            'messaging_product' => 'whatsapp',
+            'recipient_type' => 'individual',
+            'to' => $to,
+            'type' => 'interactive',
+            'interactive' => $interactive
         ];
         
         return $this->sendRequest($payload);
@@ -162,11 +340,6 @@ class WhatsAppClient {
     
     /**
      * إرسال صورة
-     * 
-     * @param string $to رقم الهاتف
-     * @param string $imageUrl رابط الصورة
-     * @param string $caption النص المرافق
-     * @return array
      */
     public function sendImage($to, $imageUrl, $caption = '') {
         $to = $this->formatPhoneNumber($to);
@@ -186,10 +359,50 @@ class WhatsAppClient {
     }
     
     /**
+     * إرسال مستند (PDF)
+     */
+    public function sendDocument($to, $documentUrl, $filename, $caption = '') {
+        $to = $this->formatPhoneNumber($to);
+        
+        $payload = [
+            'messaging_product' => 'whatsapp',
+            'recipient_type' => 'individual',
+            'to' => $to,
+            'type' => 'document',
+            'document' => [
+                'link' => $documentUrl,
+                'filename' => $filename,
+                'caption' => $caption
+            ]
+        ];
+        
+        return $this->sendRequest($payload);
+    }
+    
+    /**
+     * إرسال موقع
+     */
+    public function sendLocation($to, $latitude, $longitude, $name = '', $address = '') {
+        $to = $this->formatPhoneNumber($to);
+        
+        $payload = [
+            'messaging_product' => 'whatsapp',
+            'recipient_type' => 'individual',
+            'to' => $to,
+            'type' => 'location',
+            'location' => [
+                'latitude' => $latitude,
+                'longitude' => $longitude,
+                'name' => $name,
+                'address' => $address
+            ]
+        ];
+        
+        return $this->sendRequest($payload);
+    }
+    
+    /**
      * إرسال طلب HTTP للـ API
-     * 
-     * @param array $payload البيانات المرسلة
-     * @return array
      */
     private function sendRequest($payload) {
         $url = "{$this->baseUrl}/{$this->apiVersion}/{$this->phoneNumberId}/messages";
@@ -215,12 +428,10 @@ class WhatsAppClient {
         
         curl_close($ch);
         
-        // تسجيل في حالة الـ Debug
         if ($this->debug) {
             $this->logRequest($url, $payload, $response, $httpCode);
         }
         
-        // معالجة الخطأ
         if ($error) {
             return [
                 'success' => false,
@@ -231,7 +442,6 @@ class WhatsAppClient {
         
         $result = json_decode($response, true);
         
-        // التحقق من نجاح الإرسال
         if ($httpCode >= 200 && $httpCode < 300 && isset($result['messages'])) {
             return [
                 'success' => true,
@@ -240,7 +450,6 @@ class WhatsAppClient {
             ];
         }
         
-        // في حالة الخطأ
         return [
             'success' => false,
             'error' => $result['error']['message'] ?? 'Unknown error',
@@ -252,20 +461,14 @@ class WhatsAppClient {
     
     /**
      * تنسيق رقم الهاتف
-     * 
-     * @param string $phone رقم الهاتف
-     * @return string
      */
     private function formatPhoneNumber($phone) {
-        // إزالة كل الأحرف غير الرقمية
         $phone = preg_replace('/[^0-9]/', '', $phone);
         
-        // إذا بدأ بـ 0، أزل الصفر وأضف كود السعودية
         if (substr($phone, 0, 1) === '0') {
             $phone = '966' . substr($phone, 1);
         }
         
-        // إذا لم يبدأ بكود الدولة، أضف كود السعودية
         if (strlen($phone) === 9) {
             $phone = '966' . $phone;
         }
@@ -299,14 +502,16 @@ class WhatsAppClient {
     }
     
     /**
-     * التحقق من حالة الرقم على واتساب
-     * (غير متاح في الإصدار الأساسي)
+     * تعيين Access Token جديد
      */
-    public function checkNumberStatus($phone) {
-        // ملاحظة: هذه الميزة تتطلب إذن خاص من Meta
-        return [
-            'success' => false,
-            'error' => 'هذه الميزة غير متاحة حالياً'
-        ];
+    public function setAccessToken($token) {
+        $this->accessToken = $token;
+    }
+    
+    /**
+     * تفعيل/تعطيل وضع التشخيص
+     */
+    public function setDebugMode($enabled) {
+        $this->debug = $enabled;
     }
 }
