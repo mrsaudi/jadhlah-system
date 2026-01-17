@@ -1,85 +1,82 @@
 <?php
 /**
- * مولد خريطة المشروع - JSON Format
- * الاستخدام: افتح الملف في المتصفح مباشرة
+ * مولد خريطة مشروع مُلخصة - استبعاد الملفات الهامشية
  */
 
 header('Content-Type: application/json; charset=utf-8');
 
-function scanDirectory($path, $basePath = null) {
-    if ($basePath === null) {
-        $basePath = $path;
+// قائمة الاستبعاد
+$excludeDirs = [
+    'node_modules', 'vendor', '.git', '.svn', '.idea', '.vscode',
+    'cache', 'tmp', 'temp', 'logs', 'backups', 'backup'
+];
+
+$excludeFiles = [
+    '.DS_Store', 'Thumbs.db', '.gitignore', '.htaccess',
+    'error_log', 'debug.log', '.env.example'
+];
+
+$excludeExtensions = [
+    'log', 'tmp', 'cache', 'bak', 'swp', 'swo'
+];
+
+function shouldExclude($item, $isDir, $excludeDirs, $excludeFiles, $excludeExtensions) {
+    // استبعاد الملفات/المجلدات المخفية
+    if ($item[0] === '.') return true;
+    
+    if ($isDir) {
+        return in_array(strtolower($item), array_map('strtolower', $excludeDirs));
     }
+    
+    // استبعاد الملفات المحددة
+    if (in_array($item, $excludeFiles)) return true;
+    
+    // استبعاد حسب الامتداد
+    $ext = pathinfo($item, PATHINFO_EXTENSION);
+    return in_array(strtolower($ext), $excludeExtensions);
+}
+
+function scanDir($path, $basePath = null) {
+    global $excludeDirs, $excludeFiles, $excludeExtensions;
+    
+    if ($basePath === null) $basePath = $path;
     
     $result = [];
-    
-    // التأكد من وجود المجلد وإمكانية قراءته
-    if (!is_dir($path) || !is_readable($path)) {
-        return $result;
-    }
-    
     $items = @scandir($path);
     
-    if ($items === false) {
-        return $result;
-    }
+    if ($items === false) return $result;
     
     foreach ($items as $item) {
-        // تجاهل . و ..
-        if ($item === '.' || $item === '..') {
+        if ($item === '.' || $item === '..') continue;
+        
+        $fullPath = $path . DIRECTORY_SEPARATOR . $item;
+        $isDir = is_dir($fullPath);
+        
+        // تطبيق الاستبعاد
+        if (shouldExclude($item, $isDir, $excludeDirs, $excludeFiles, $excludeExtensions)) {
             continue;
         }
         
-        $fullPath = $path . DIRECTORY_SEPARATOR . $item;
-        $relativePath = str_replace($basePath . DIRECTORY_SEPARATOR, '', $fullPath);
-        
-        $itemData = [
-            'name' => $item,
-            'path' => $relativePath,
-            'type' => is_dir($fullPath) ? 'directory' : 'file'
-        ];
-        
-        // إذا كان مجلد، اقرأ محتوياته
-        if (is_dir($fullPath)) {
-            $children = scanDirectory($fullPath, $basePath);
+        if ($isDir) {
+            $children = scanDir($fullPath, $basePath);
             if (!empty($children)) {
-                $itemData['children'] = $children;
+                $result[$item] = $children;
+            } else {
+                $result[] = $item; // مجلد فارغ
             }
         } else {
-            // إضافة حجم الملف
-            $itemData['size'] = @filesize($fullPath);
-            
-            // إضافة امتداد الملف
-            $ext = pathinfo($item, PATHINFO_EXTENSION);
-            if ($ext) {
-                $itemData['extension'] = $ext;
-            }
+            $result[] = $item; // ملف فقط
         }
-        
-        $result[] = $itemData;
     }
     
     return $result;
 }
 
-// بداية المسح من المجلد الحالي
-$startPath = __DIR__;
-
-$projectMap = [
-    'generated_at' => date('Y-m-d H:i:s'),
-    'root_path' => basename($startPath),
-    'structure' => scanDirectory($startPath)
+$map = [
+    'project' => basename(__DIR__),
+    'date' => date('Y-m-d H:i'),
+    'files' => scanDir(__DIR__)
 ];
 
-// طباعة النتيجة بصيغة JSON منسقة
-echo json_encode($projectMap, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+echo json_encode($map, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE);
 ?>
-```
-
----
-
-### **الخطوة 3: التنفيذ**
-1. احفظ الملف
-2. افتح المتصفح واكتب:
-```
-   https://موقعك.com/map-generator.php
