@@ -1,82 +1,79 @@
 <?php
 /**
- * مولد خريطة مشروع مُلخصة - استبعاد الملفات الهامشية
+ * مولد خريطة المشروع - نسخة آمنة
  */
+
+// إيقاف عرض الأخطاء للمستخدم (لكن تسجيلها)
+ini_set('display_errors', 0);
+error_reporting(E_ALL);
+
+// زيادة حدود التنفيذ
+@ini_set('memory_limit', '256M');
+@ini_set('max_execution_time', '60');
 
 header('Content-Type: application/json; charset=utf-8');
 
-// قائمة الاستبعاد
-$excludeDirs = [
-    'node_modules', 'vendor', '.git', '.svn', '.idea', '.vscode',
-    'cache', 'tmp', 'temp', 'logs', 'backups', 'backup'
-];
+try {
+    // قائمة الاستبعاد
+    $exclude = [
+        'dirs' => ['node_modules', 'vendor', '.git', 'cache', 'tmp', 'logs', 'backups'],
+        'files' => ['.DS_Store', 'Thumbs.db', '.gitignore', 'error_log'],
+        'ext' => ['log', 'tmp', 'cache', 'bak']
+    ];
 
-$excludeFiles = [
-    '.DS_Store', 'Thumbs.db', '.gitignore', '.htaccess',
-    'error_log', 'debug.log', '.env.example'
-];
-
-$excludeExtensions = [
-    'log', 'tmp', 'cache', 'bak', 'swp', 'swo'
-];
-
-function shouldExclude($item, $isDir, $excludeDirs, $excludeFiles, $excludeExtensions) {
-    // استبعاد الملفات/المجلدات المخفية
-    if ($item[0] === '.') return true;
-    
-    if ($isDir) {
-        return in_array(strtolower($item), array_map('strtolower', $excludeDirs));
-    }
-    
-    // استبعاد الملفات المحددة
-    if (in_array($item, $excludeFiles)) return true;
-    
-    // استبعاد حسب الامتداد
-    $ext = pathinfo($item, PATHINFO_EXTENSION);
-    return in_array(strtolower($ext), $excludeExtensions);
-}
-
-function scanDir($path, $basePath = null) {
-    global $excludeDirs, $excludeFiles, $excludeExtensions;
-    
-    if ($basePath === null) $basePath = $path;
-    
-    $result = [];
-    $items = @scandir($path);
-    
-    if ($items === false) return $result;
-    
-    foreach ($items as $item) {
-        if ($item === '.' || $item === '..') continue;
+    function scan($path, &$exclude, $base = null) {
+        if (!$base) $base = $path;
         
-        $fullPath = $path . DIRECTORY_SEPARATOR . $item;
-        $isDir = is_dir($fullPath);
+        $result = [];
         
-        // تطبيق الاستبعاد
-        if (shouldExclude($item, $isDir, $excludeDirs, $excludeFiles, $excludeExtensions)) {
-            continue;
-        }
+        if (!is_readable($path)) return $result;
         
-        if ($isDir) {
-            $children = scanDir($fullPath, $basePath);
-            if (!empty($children)) {
-                $result[$item] = $children;
+        $items = @scandir($path);
+        if (!$items) return $result;
+        
+        foreach ($items as $item) {
+            if ($item === '.' || $item === '..') continue;
+            if ($item[0] === '.') continue; // تجاهل المخفي
+            
+            $full = $path . DIRECTORY_SEPARATOR . $item;
+            $isDir = is_dir($full);
+            
+            // فحص الاستبعاد
+            if ($isDir && in_array(strtolower($item), $exclude['dirs'])) continue;
+            if (!$isDir && in_array($item, $exclude['files'])) continue;
+            
+            $ext = pathinfo($item, PATHINFO_EXTENSION);
+            if ($ext && in_array(strtolower($ext), $exclude['ext'])) continue;
+            
+            if ($isDir) {
+                $sub = scan($full, $exclude, $base);
+                if (!empty($sub)) {
+                    $result[$item] = $sub;
+                } else {
+                    $result[] = $item;
+                }
             } else {
-                $result[] = $item; // مجلد فارغ
+                $result[] = $item;
             }
-        } else {
-            $result[] = $item; // ملف فقط
         }
+        
+        return $result;
     }
-    
-    return $result;
+
+    $data = [
+        'project' => basename(__DIR__),
+        'date' => date('Y-m-d H:i'),
+        'tree' => scan(__DIR__, $exclude)
+    ];
+
+    echo json_encode($data, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE);
+
+} catch (Exception $e) {
+    http_response_code(500);
+    echo json_encode([
+        'error' => true,
+        'message' => 'فشل في قراءة المجلدات',
+        'details' => $e->getMessage()
+    ], JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE);
 }
-
-$map = [
-    'project' => basename(__DIR__),
-    'date' => date('Y-m-d H:i'),
-    'files' => scanDir(__DIR__)
-];
-
-echo json_encode($map, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE);
 ?>
