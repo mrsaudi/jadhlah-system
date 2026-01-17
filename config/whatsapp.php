@@ -35,7 +35,7 @@ define('WHATSAPP_CONFIG', [
     // Access Token
     // ⚠️ هام: هذا Token مؤقت! يجب استبداله بـ Permanent Token
     // راجع: https://developers.facebook.com/docs/whatsapp/business-management-api/get-started
-    'access_token' => 'EAAMi8qLree4BQa6YIZBiLZBtLptWzUPLS0vPZAbuq4v6wJMF2Q8QA9QFCPoRBt1gUatNtk5oQqakzrkaadtC1FBF6qZAlmF9m4Sl4mF25XJ80DaXmmPmvSsdihKBmGd2nMhGqe5pdx2ZC1AeMfTAUkRtW3d8Bc0PJOR6ZA8YQTvqOiX4y1LWPgZC3OZA7drzA7aUgnHRHux7gbI2B7tpWFZB98YXXlefI6eRZCNJ47ILilQVPa6xCYzFAh6SpeaZBPz0ciRKoTr1BmzZByYhSapdLgl4kQUxjQol1QAXLQZDZD',
+    'access_token' => 'EAAMi8qLree4BQenQmOlItLN7CwAjGlSyfi3InBYekL8iYlNRIU6eYyB4nSMjO0DZAXYRxSJGmJ1jZCBXKoVZCUtV9nKBG2E1LCuhwd5btEkz5pzZCKZCGJzJ2z4wFzUfrRa05Dlpp5l5aNCZA41HcpHWiQ4g0MLbaVKNE17eWK9kWvpX3hEQDyWXwwZC6WDMwZCrWsNG38n6koT1jO6vrfUIZAufu7PTkZB992vV4QBxYwTk3lzZBU2ZA2cJZBJZCBMY6oZBaeZCVUFBZAMZCtKyp6Y60ZBXz85MgzxtlcVssw9d5kZD',
     
     // إصدار الـ API
     'api_version' => 'v21.0',
