@@ -1,13 +1,11 @@
 <?php
 /**
- * مولد خريطة المشروع - نسخة آمنة
+ * مولد خريطة المشروع - بدون صور
  */
 
-// إيقاف عرض الأخطاء للمستخدم (لكن تسجيلها)
 ini_set('display_errors', 0);
 error_reporting(E_ALL);
 
-// زيادة حدود التنفيذ
 @ini_set('memory_limit', '256M');
 @ini_set('max_execution_time', '60');
 
@@ -18,7 +16,7 @@ try {
     $exclude = [
         'dirs' => ['node_modules', 'vendor', '.git', 'cache', 'tmp', 'logs', 'backups'],
         'files' => ['.DS_Store', 'Thumbs.db', '.gitignore', 'error_log'],
-        'ext' => ['log', 'tmp', 'cache', 'bak']
+        'ext' => ['log', 'tmp', 'cache', 'bak', 'jpg', 'jpeg', 'png', 'gif', 'webp', 'svg', 'ico']
     ];
 
     function scan($path, &$exclude, $base = null) {
@@ -33,7 +31,7 @@ try {
         
         foreach ($items as $item) {
             if ($item === '.' || $item === '..') continue;
-            if ($item[0] === '.') continue; // تجاهل المخفي
+            if ($item[0] === '.') continue;
             
             $full = $path . DIRECTORY_SEPARATOR . $item;
             $isDir = is_dir($full);
